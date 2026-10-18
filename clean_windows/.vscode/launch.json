@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CleanWin (Windows)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [],
+      "toolArgs": ["-d", "windows"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramW6432": "C:\\Program Files"
+      }
+    }
+  ]
+}
