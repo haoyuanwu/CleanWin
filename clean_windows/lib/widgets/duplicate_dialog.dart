@@ -172,33 +172,50 @@ class _DuplicateDialogState extends State<DuplicateDialog> {
                       ),
                       children: [
                         for (var i = 0; i < group.files.length; i++)
-                          ListTile(
-                            leading: i == 0
-                                ? const Tooltip(
-                                    message: '保留此副本',
-                                    child: Icon(Icons.lock_outline_rounded),
-                                  )
-                                : Checkbox(
-                                    value: group.files[i].selected,
-                                    onChanged: _busy
-                                        ? null
-                                        : (value) => setState(
-                                            () => group.files[i].selected =
-                                                value ?? false,
-                                          ),
+                          FileActionsButton.contextMenu(
+                            path: group.files[i].path,
+                            allowMove: false,
+                            enabled: !_busy,
+                            actions: [
+                              if (i > 0)
+                                FileMenuAction(
+                                  group.files[i].selected ? '取消勾选' : '勾选此项',
+                                  icon: Icons.check_box_outlined,
+                                  onSelected: () => setState(
+                                    () => group.files[i].selected =
+                                        !group.files[i].selected,
                                   ),
-                            title: Text(
-                              group.files[i].name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              group.files[i].path,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: FileActionsButton(
-                              path: group.files[i].path,
+                                ),
+                            ],
+                            child: ListTile(
+                              leading: i == 0
+                                  ? const Tooltip(
+                                      message: '保留此副本',
+                                      child: Icon(Icons.lock_outline_rounded),
+                                    )
+                                  : Checkbox(
+                                      value: group.files[i].selected,
+                                      onChanged: _busy
+                                          ? null
+                                          : (value) => setState(
+                                              () => group.files[i].selected =
+                                                  value ?? false,
+                                            ),
+                                    ),
+                              title: Text(
+                                group.files[i].name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                group.files[i].path,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: FileActionsButton(
+                                path: group.files[i].path,
+                                allowMove: false,
+                              ),
                             ),
                           ),
                       ],

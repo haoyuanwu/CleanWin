@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+
+import '../widgets/file_actions_button.dart';
+
 import 'package:provider/provider.dart';
 
 import '../services/startup_service.dart';
+import '../services/file_actions.dart';
 import '../services/registry_scan_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -30,7 +34,6 @@ class _StartupPageState extends State<StartupPage> {
   String? _loadError;
   String _query = '';
   bool? _enabledFilter;
-  bool _unknownOnly = false;
   String _sourceFilter = 'all';
   bool _loaded = false;
 
@@ -59,7 +62,7 @@ class _StartupPageState extends State<StartupPage> {
       final items = await _service.list(force: true);
       if (!mounted) return;
       setState(() {
-        _items = items;
+        _items = items.where((item) => item.canManage).toList();
         _loadError = null;
         _loaded = true;
       });
@@ -73,15 +76,15 @@ class _StartupPageState extends State<StartupPage> {
 
   @override
   Widget build(BuildContext context) {
+    final manageableItems = _items.where((item) => item.canManage).toList();
     final query = _query.trim().toLowerCase();
-    final items = _items
+    final items = manageableItems
         .where(
           (item) =>
               ('${item.name} ${item.command} ${item.locationLabel} ${item.publisher ?? ''}')
                   .toLowerCase()
                   .contains(query) &&
               (_sourceFilter == 'all' || item.group == _sourceFilter) &&
-              (!_unknownOnly || !item.stateKnown) &&
               (_enabledFilter == null ||
                   (item.stateKnown && item.enabled == _enabledFilter)),
         )
@@ -103,20 +106,16 @@ class _StartupPageState extends State<StartupPage> {
                       items: [
                         ModuleSelectItem(
                           value: 'all',
-                          child: Text('全部来源（${_items.length}）'),
+                          child: Text('全部来源（${manageableItems.length}）'),
                         ),
                         for (final source in const [
                           (id: 'registry', label: '注册表'),
                           (id: 'folder', label: '启动文件夹'),
-                          (id: 'task', label: '计划任务'),
-                          (id: 'service', label: '自动服务'),
-                          (id: 'package', label: '商店应用'),
-                          (id: 'system', label: '系统登录'),
                         ])
                           ModuleSelectItem(
                             value: source.id,
                             child: Text(
-                              '${source.label}（${_items.where((item) => item.group == source.id).length}）',
+                              '${source.label}（${manageableItems.where((item) => item.group == source.id).length}）',
                             ),
                           ),
                       ],
@@ -141,10 +140,10 @@ class _StartupPageState extends State<StartupPage> {
           ),
           const SizedBox(height: 12),
           ModuleInsights(
-            label: '启动状态 · ${_items.length} 项',
+            label: '启动状态 · ${manageableItems.length} 项',
             value:
-                '${_items.where((item) => item.enabled && item.stateKnown).length} 已启用',
-            hint: '点击状态筛选 · 修改下次登录生效',
+                '${manageableItems.where((item) => item.enabled && item.stateKnown).length} 已启用',
+            hint: '修改下次登录生效',
             busy: _loading,
             icon: Icons.rocket_launch_rounded,
             segments: [
@@ -154,42 +153,16 @@ class _StartupPageState extends State<StartupPage> {
               ])
                 InsightSegment(
                   label: label,
-                  amount: _items
+                  amount: manageableItems
                       .where((item) => item.stateKnown && item.enabled == value)
                       .length
                       .toDouble(),
                   value:
-                      '${_items.where((item) => item.stateKnown && item.enabled == value).length}',
+                      '${manageableItems.where((item) => item.stateKnown && item.enabled == value).length}',
                   color: color,
                   selected: _enabledFilter == value,
                   onTap: () => setState(() {
                     _enabledFilter = _enabledFilter == value ? null : value;
-                    _unknownOnly = false;
-                  }),
-                ),
-              InsightSegment(
-                label: '状态未知',
-                amount: _items
-                    .where((item) => !item.stateKnown)
-                    .length
-                    .toDouble(),
-                value: '${_items.where((item) => !item.stateKnown).length}',
-                color: AppColors.textTertiary,
-                selected: _unknownOnly,
-                onTap: () => setState(() {
-                  _unknownOnly = !_unknownOnly;
-                  _enabledFilter = null;
-                }),
-              ),
-              if (_enabledFilter != null || _unknownOnly)
-                InsightSegment(
-                  label: '全部状态',
-                  amount: 0,
-                  value: '重置',
-                  color: AppColors.textSecondary,
-                  onTap: () => setState(() {
-                    _enabledFilter = null;
-                    _unknownOnly = false;
                   }),
                 ),
             ],
@@ -233,55 +206,71 @@ class _StartupPageState extends State<StartupPage> {
                       separatorBuilder: (_, _) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final item = items[index];
-                        return ListTile(
-                          key: ValueKey(item.id),
-                          onTap: () => _showDetails(
-                            item.name,
-                            '来源：${item.groupLabel}\n${item.locationLabel}\n\n命令：${item.command}\n\n${item.publisher ?? ''}\n${item.canToggle ? '修改将在下次启动或登录时生效。' : '只读项目，请在 Windows 设置、任务计划程序或服务管理中调整。'}',
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 6,
-                          ),
-                          leading: Icon(
-                            switch (item.group) {
-                              'task' => Icons.task_outlined,
-                              'service' => Icons.settings_suggest_outlined,
-                              'folder' => Icons.folder_outlined,
-                              'package' => Icons.apps_rounded,
-                              'system' => Icons.shield_outlined,
-                              _ => Icons.rocket_launch_outlined,
-                            },
-                            color: item.enabled
-                                ? AppColors.primary
-                                : AppColors.textTertiary,
-                          ),
-                          title: Text(
-                            item.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Tooltip(
-                            message: item.command,
-                            child: Text(
-                              '${item.groupLabel} · ${item.shortCommand}',
+                        return FileActionsButton.contextMenu(
+                          path: item.sourceFile.isNotEmpty
+                              ? item.sourceFile
+                              : FileActions.executablePath(item.command) ?? '',
+                          allowMove: false,
+                          enabled: !_busy && !_loading,
+                          actions: [
+                            FileMenuAction(
+                              item.enabled ? '禁用启动项' : '启用启动项',
+                              icon: Icons.power_settings_new_rounded,
+                              onSelected: () => _toggle(item, !item.enabled),
+                            ),
+                            FileMenuAction(
+                              '复制启动命令',
+                              icon: Icons.copy_rounded,
+                              onSelected: () =>
+                                  FileActions.copyPath(item.command),
+                            ),
+                            if (item.group == 'folder')
+                              FileMenuAction(
+                                '删除启动项',
+                                icon: Icons.delete_outline_rounded,
+                                destructive: true,
+                                onSelected: () => _remove(item),
+                              ),
+                          ],
+                          child: ListTile(
+                            key: ValueKey(item.id),
+                            onTap: () => _showDetails(
+                              item.name,
+                              '来源：${item.groupLabel}\n${item.locationLabel}\n\n命令：${item.command}\n\n${item.publisher ?? ''}\n修改将在下次启动或登录时生效。',
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 6,
+                            ),
+                            leading: Icon(
+                              switch (item.group) {
+                                'task' => Icons.task_outlined,
+                                'service' => Icons.settings_suggest_outlined,
+                                'folder' => Icons.folder_outlined,
+                                'package' => Icons.apps_rounded,
+                                'system' => Icons.shield_outlined,
+                                _ => Icons.rocket_launch_outlined,
+                              },
+                              color: item.enabled
+                                  ? AppColors.primary
+                                  : AppColors.textTertiary,
+                            ),
+                            title: Text(
+                              item.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (!item.canToggle)
-                                StatusChip(
-                                  label: !item.stateKnown
-                                      ? '状态由 Windows 管理'
-                                      : '${item.enabled ? '已启用' : '已禁用'} · 只读',
-                                  color: item.enabled && item.stateKnown
-                                      ? AppColors.primary
-                                      : AppColors.textSecondary,
-                                )
-                              else
+                            subtitle: Tooltip(
+                              message: item.command,
+                              child: Text(
+                                '${item.groupLabel} · ${item.shortCommand}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
                                 Tooltip(
                                   message: item.enabled ? '禁用启动项' : '启用启动项',
                                   child: Switch(
@@ -291,18 +280,19 @@ class _StartupPageState extends State<StartupPage> {
                                         : (value) => _toggle(item, value),
                                   ),
                                 ),
-                              if (item.location.startsWith('StartupFolder'))
-                                IconButton(
-                                  tooltip: '删除启动项',
-                                  onPressed: _busy || _loading
-                                      ? null
-                                      : () => _remove(item),
-                                  icon: const Icon(
-                                    Icons.delete_outline_rounded,
-                                    color: AppColors.danger,
+                                if (item.location.startsWith('StartupFolder'))
+                                  IconButton(
+                                    tooltip: '删除启动项',
+                                    onPressed: _busy || _loading
+                                        ? null
+                                        : () => _remove(item),
+                                    icon: const Icon(
+                                      Icons.delete_outline_rounded,
+                                      color: AppColors.danger,
+                                    ),
                                   ),
-                                ),
-                            ],
+                              ],
+                            ),
                           ),
                         );
                       },
@@ -697,28 +687,51 @@ class _RegistryCleanPageState extends State<RegistryCleanPage> {
     );
   }
 
-  Widget _buildIssue(RegistryIssue issue, bool enabled) => CheckboxListTile(
-    key: ValueKey(issue.id),
-    dense: true,
-    value: _selected.contains(issue.id),
-    onChanged: !enabled
-        ? null
-        : (value) => setState(() {
-            if (value == true) {
-              _selected.add(issue.id);
-            } else {
-              _selected.remove(issue.id);
-            }
-          }),
-    title: Text(issue.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-    subtitle: Tooltip(
-      message:
-          '${issue.detail}\n${issue.fullKey}\n值：${issue.valueName == '' ? '(默认)' : issue.valueName}',
-      child: Text(
-        '${issue.view == 'Registry32' ? '32 位' : '64 位'} · ${issue.fullKey}\n值：${issue.valueName == '' ? '(默认)' : issue.valueName}',
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 11),
+  Widget _buildIssue(
+    RegistryIssue issue,
+    bool enabled,
+  ) => FileActionsButton.contextMenu(
+    path: issue.target,
+    allowMove: false,
+    actions: [
+      FileMenuAction(
+        '复制注册表路径',
+        icon: Icons.copy_rounded,
+        onSelected: () => FileActions.copyPath(issue.fullKey),
+      ),
+      FileMenuAction(
+        _selected.contains(issue.id) ? '取消勾选' : '勾选此项',
+        icon: Icons.check_box_outlined,
+        onSelected: !enabled
+            ? null
+            : () => setState(() {
+                if (!_selected.add(issue.id)) _selected.remove(issue.id);
+              }),
+      ),
+    ],
+    child: CheckboxListTile(
+      key: ValueKey(issue.id),
+      dense: true,
+      value: _selected.contains(issue.id),
+      onChanged: !enabled
+          ? null
+          : (value) => setState(() {
+              if (value == true) {
+                _selected.add(issue.id);
+              } else {
+                _selected.remove(issue.id);
+              }
+            }),
+      title: Text(issue.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Tooltip(
+        message:
+            '${issue.detail}\n${issue.fullKey}\n值：${issue.valueName == '' ? '(默认)' : issue.valueName}',
+        child: Text(
+          '${issue.view == 'Registry32' ? '32 位' : '64 位'} · ${issue.fullKey}\n值：${issue.valueName == '' ? '(默认)' : issue.valueName}',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 11),
+        ),
       ),
     ),
   );

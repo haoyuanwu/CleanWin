@@ -94,7 +94,12 @@ class _CaptureCleaner extends CleanService {
   }) async {
     received.addAll(items);
     return CleanReport(
-      freedBytes: items.fold(0, (sum, item) => sum + item.sizeBytes),
+      freedBytes: items
+          .where((item) => item.category != CleanCategory.downloads)
+          .fold(0, (sum, item) => sum + item.sizeBytes),
+      recycledBytes: items
+          .where((item) => item.category == CleanCategory.downloads)
+          .fold(0, (sum, item) => sum + item.sizeBytes),
       deletedCount: items.length,
       skippedCount: 0,
       failedCount: 0,
@@ -106,8 +111,12 @@ class _CaptureCleaner extends CleanService {
 class _TestCache extends ModuleCache {
   _TestCache(String directory)
     : super(storageDirectory: directory, namespace: 'scan');
+  Completer<void>? pending;
   @override
-  Future<void> setAsync(String key, Object? value) async => set(key, value);
+  Future<void> setAsync(String key, Object? value) async {
+    set(key, value);
+    if (pending != null) await pending!.future;
+  }
 }
 
 void main() {
@@ -120,7 +129,7 @@ void main() {
     ProcessUtils.debugSkip = true;
     fixture = Directory('.dart_tool').createTempSync('clean_workspace_');
     scan = _Scan();
-    cache = ModuleCache(namespace: 'scan', storageDirectory: fixture.path);
+    cache = _TestCache(fixture.path);
     preferences = ModuleCache(
       namespace: 'prefs',
       storageDirectory: fixture.path,
@@ -266,7 +275,7 @@ void main() {
   });
 
   testWidgets(
-    'smart cleanup excludes selected downloads and celebrates after dismissal',
+    'cleanup includes selected downloads, preserves unchecked categories and refreshes home',
     (tester) async {
       tester.view.physicalSize = const Size(1280, 900);
       tester.view.devicePixelRatio = 1;
@@ -283,12 +292,16 @@ void main() {
       final task = state.scan(force: true);
       scan.completeCategory(CleanCategory.systemCache);
       scan.completeCategory(CleanCategory.downloads);
+      scan.completeCategory(CleanCategory.browserCache);
       scan.gate.complete();
       await tester.pump();
       await task;
+      state.toggleCategory(state.results[CleanCategory.browserCache]!, false);
       state.toggleDownloadSelection(CleanCategory.downloads.name);
       expect(state.results[CleanCategory.downloads]!.selectedCount, 1);
       await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('orbit-systemCache')));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ElevatedButton, '智能清理'));
       await tester.pumpAndSettle();
@@ -296,11 +309,130 @@ void main() {
       await tester.pumpAndSettle();
       expect(cleaner.received.map((item) => item.category), [
         CleanCategory.systemCache,
+        CleanCategory.downloads,
       ]);
-      expect(state.results[CleanCategory.downloads]!.items, hasLength(1));
+      expect(state.results[CleanCategory.downloads]!.items, isEmpty);
+      expect(state.results[CleanCategory.browserCache]!.items, hasLength(1));
+      expect(state.results[CleanCategory.systemCache]!.items, isEmpty);
       await tester.tap(find.text('完成'));
       await tester.pumpAndSettle();
       expect(find.textContaining('为电脑释放了'), findsOneWidget);
+      await tester.tap(find.text('查看结果'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('systemCache-false')), findsNothing);
+      expect(find.byKey(const ValueKey('downloads-false')), findsNothing);
+      expect(find.byKey(const ValueKey('browserCache-false')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'downloads alone enable cleanup and always require confirmation',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      state.dispose();
+      final cleaner = _CaptureCleaner();
+      state = _State(
+        scan,
+        _TestCache(fixture.path),
+        preferences,
+        cleaner: cleaner,
+      );
+      final task = state.scan(force: true);
+      scan.completeCategory(CleanCategory.downloads);
+      scan.gate.complete();
+      await tester.pump();
+      await task;
+      state.toggleDownloadSelection(CleanCategory.downloads.name);
+      await tester.runAsync(
+        () => state.updateOptions(
+          state.options.copyWith(confirmBeforeClean: false),
+        ),
+      );
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      final button = find.widgetWithText(ElevatedButton, '智能清理');
+      expect(tester.widget<ElevatedButton>(button).onPressed, isNotNull);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      expect(find.text('确认清理'), findsOneWidget);
+      expect(find.textContaining('下载文件移入回收站'), findsWidgets);
+      expect(cleaner.received, isEmpty);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(cleaner.received, isEmpty);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('确认清理'));
+      await tester.pumpAndSettle();
+      expect(cleaner.received.single.category, CleanCategory.downloads);
+      expect(state.results[CleanCategory.downloads]!.items, isEmpty);
+      expect(state.selectedDownloadIds, isEmpty);
+      expect(find.text('清理成功'), findsOneWidget);
+      expect(find.text('已移入回收站'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('cleanup-result')),
+          matching: find.text('0 B'),
+        ),
+        findsNothing,
+      );
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'home publishes cleared results before cache save and resets after a new scan',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      state.dispose();
+      final pendingCache = _TestCache(fixture.path);
+      state = _State(
+        scan,
+        pendingCache,
+        preferences,
+        cleaner: _CaptureCleaner(),
+      );
+      final scanTask = state.scan(force: true);
+      scan.completeCategory(CleanCategory.systemCache);
+      scan.gate.complete();
+      await tester.pump();
+      await scanTask;
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('查看结果'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('systemCache-false')), findsOneWidget);
+      pendingCache.pending = Completer<void>.sync();
+      final cleanup = state.cleanSelected(
+        categories: {CleanCategory.systemCache},
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(state.cleaning, true);
+      expect(state.results[CleanCategory.systemCache]!.items, isEmpty);
+      expect(find.byKey(const ValueKey('systemCache-false')), findsNothing);
+      expect(find.text('已选项目已处理，暂无剩余内容'), findsOneWidget);
+      expect(state.totalSelectedBytes, 0);
+      pendingCache.pending!.complete();
+      await tester.pump();
+      await cleanup;
+      await tester.pumpAndSettle();
+      pendingCache.pending = null;
+      await tester.runAsync(() => state.scan(force: true));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('systemCache-false')), findsOneWidget);
+      expect(find.text('已选项目已处理，暂无剩余内容'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },

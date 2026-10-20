@@ -10,6 +10,7 @@ import '../models/scan_options.dart';
 import '../models/installed_app.dart';
 import '../services/app_icon_service.dart';
 import '../services/clean_service.dart';
+import '../services/file_actions.dart';
 import '../services/disk_services.dart';
 import '../services/module_cache.dart';
 import '../services/registry_scan_service.dart';
@@ -21,7 +22,7 @@ import '../services/activity_service.dart';
 /// 全局应用状态
 class AppState extends ChangeNotifier {
   // Versioned because older snapshots do not contain file-level boundaries.
-  static const _scanCacheKey = 'results_v6';
+  static const _scanCacheKey = 'results_v7';
   AppState({
     bool scanOnStart = false,
     ScanService? scanService,
@@ -281,7 +282,7 @@ class AppState extends ChangeNotifier {
 
       _lastScanAt = DateTime.now();
       if (cancellation.requested) _scanError = '扫描已取消，已核对结果保留，可继续查看或重新扫描';
-      await _saveScanCache();
+      await _saveScanCache(writeAsync: true);
     } catch (_) {
       _scanError = _whitelist.readable
           ? '扫描未完整完成，已读取内容保留供查看，请重新扫描重试'
@@ -534,14 +535,28 @@ class AppState extends ChangeNotifier {
         _lastFreedBytes = report.freedBytes;
       }
 
-      for (final category in _results.values) {
-        category.items.removeWhere(
-          (item) => report.completedItemIds.contains(item.id),
+      final completedItems = items
+          .where((item) => report.completedItemIds.contains(item.id))
+          .toSet();
+      for (final entry in _results.entries.toList()) {
+        if (categories != null && !categories.contains(entry.key)) continue;
+        final category = entry.value;
+        _results[entry.key] = ScanCategory(
+          category: category.category,
+          items: category.items
+              .where((item) => !completedItems.contains(item))
+              .toList(),
+          scanDuration: category.scanDuration,
+          error: category.error,
         );
       }
-      _selectedDownloadIds.removeWhere(
-        (id) => report.completedItemIds.contains(id),
-      );
+      final completedDownloads = completedItems
+          .where((item) => item.category == CleanCategory.downloads)
+          .map((item) => item.id)
+          .toSet();
+      _selectedDownloadIds.removeWhere(completedDownloads.contains);
+      // Publish the reconciled snapshot before waiting on cache persistence.
+      notifyListeners();
       await _saveScanCache(writeAsync: true);
       return report;
     } finally {
@@ -774,18 +789,5 @@ class AppState extends ChangeNotifier {
   }
 
   /// 在资源管理器中打开
-  Future<void> revealInExplorer(String path) async {
-    final normalized = path.replaceAll('/', '\\');
-    try {
-      if (Directory(normalized).existsSync() || File(normalized).existsSync()) {
-        await Process.run('explorer', [normalized]);
-      } else {
-        // 打开父目录
-        final parent = normalized.contains('\\')
-            ? normalized.substring(0, normalized.lastIndexOf('\\'))
-            : normalized;
-        await Process.run('explorer', [parent]);
-      }
-    } on Exception catch (_) {}
-  }
+  Future<void> revealInExplorer(String path) => FileActions.reveal(path);
 }

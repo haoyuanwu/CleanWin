@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+
 import 'package:provider/provider.dart';
+
+import '../services/download_list_index.dart';
 
 import '../models/clean_models.dart';
 import '../services/path_utils.dart';
@@ -23,6 +27,59 @@ class _DownloadsPageState extends State<DownloadsPage> {
   String _query = '';
   String? _kind;
   FileAge _age = FileAge.all;
+  final _collapsedFolders = <String>{};
+  ScanCategory? _indexedCategory;
+  int _indexedCount = -1;
+  bool? _indexedCleaning;
+  String? _indexedQuery;
+  String? _indexedKind;
+  FileAge? _indexedAge;
+  Future<DownloadListIndex>? _indexFuture;
+
+  Future<DownloadListIndex> _indexFor(ScanCategory? category, bool cleaning) {
+    final items = category?.items ?? const <CleanItem>[];
+    if (!identical(_indexedCategory, category) ||
+        _indexedCount != items.length ||
+        _indexedCleaning != cleaning ||
+        _indexedQuery != _query ||
+        _indexedKind != _kind ||
+        _indexedAge != _age ||
+        _indexFuture == null) {
+      _indexedCategory = category;
+      _indexedCount = items.length;
+      _indexedCleaning = cleaning;
+      _indexedQuery = _query;
+      _indexedKind = _kind;
+      _indexedAge = _age;
+      final request = DownloadListRequest(
+        [
+          for (var i = 0; i < items.length; i++)
+            (
+              index: i,
+              id: items[i].id,
+              name: items[i].name,
+              path: items[i].path,
+              root: downloadFolder(items[i].path, items[i].id),
+              bytes: items[i].sizeBytes,
+              modified: items[i].reviewedModified,
+            ),
+        ],
+        query: _query,
+        kind: _kind,
+        minimumDays: switch (_age) {
+          FileAge.all => null,
+          FileAge.recent => 0,
+          FileAge.old => 30,
+          FileAge.older => 180,
+        },
+        maximumDays: _age == FileAge.recent ? 30 : null,
+      );
+      _indexFuture = items.length > 400
+          ? compute(buildDownloadListIndex, request)
+          : SynchronousFuture(buildDownloadListIndex(request));
+    }
+    return _indexFuture!;
+  }
 
   Future<void> _scan() async {
     try {
@@ -38,32 +95,36 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final category = state.results[CleanCategory.downloads];
+    return FutureBuilder<DownloadListIndex>(
+      future: _indexFor(category, state.cleaning),
+      builder: (context, snapshot) => _buildPage(
+        context,
+        state,
+        category,
+        snapshot.connectionState == ConnectionState.done ? snapshot.data : null,
+      ),
+    );
+  }
+
+  Widget _buildPage(
+    BuildContext context,
+    AppState state,
+    ScanCategory? category,
+    DownloadListIndex? index,
+  ) {
     final allItems = category?.items ?? const <CleanItem>[];
     final query = _query.trim().toLowerCase();
-    final items =
-        allItems
-            .where(
-              (item) =>
-                  '${item.name} ${item.path}'.toLowerCase().contains(query) &&
-                  _age.includes(item.reviewedModified),
-            )
-            .toList()
-          ..removeWhere((item) => _kind != null && fileKind(item.name) != _kind)
-          ..sort((a, b) => b.sizeBytes.compareTo(a.sizeBytes));
-    final totalBytes = allItems.fold<int>(
-      0,
-      (sum, item) => sum + item.sizeBytes,
-    );
+    final totalBytes = index?.totalBytes ?? 0;
     final selectedIds = state.selectedDownloadIds;
-    final selectedBytes = allItems
-        .where((i) => selectedIds.contains(i.id))
-        .fold<int>(0, (s, i) => s + i.sizeBytes);
-
+    final selectedBytes = selectedIds.fold<int>(
+      0,
+      (sum, id) => sum + (index?.sizeById[id] ?? 0),
+    );
     return ModulePageShell(
       title: '下载管理',
       subtitle: category == null
-          ? '扫描下载目录中的大文件（≥10MB），默认不勾选'
-          : '${items.length} / ${allItems.length} 个文件 · 已选 ${selectedIds.length} 项，${formatBytes(selectedBytes)} · 按大小排序',
+          ? '系统下载（≥10MB）与软件管家下载包，默认不勾选'
+          : '${index?.visibleCount ?? 0} / ${allItems.length} 个文件 · 已选 ${selectedIds.length} 项，${formatBytes(selectedBytes)} · 按大小排序',
       toolbar: Toolbar(
         children: [
           if (selectedIds.isNotEmpty)
@@ -106,21 +167,18 @@ class _DownloadsPageState extends State<DownloadsPage> {
             ),
             const SizedBox(height: 10),
           ],
-          if (category != null) ...[
+          if (category != null && index != null) ...[
             ModuleInsights(
               label: '已扫描下载 · ${allItems.length} 项',
               value: formatBytes(totalBytes),
-              hint: '圆环按容量分布 · 点击类型筛选',
+
               icon: Icons.download_rounded,
               segments: [
                 for (var i = 0; i < fileKinds.length; i++)
                   InsightSegment(
                     label: fileKinds[i],
-                    amount: allItems
-                        .where((item) => fileKind(item.name) == fileKinds[i])
-                        .fold<double>(0, (sum, item) => sum + item.sizeBytes),
-                    value:
-                        '${allItems.where((item) => fileKind(item.name) == fileKinds[i]).length}',
+                    amount: (index.kindBytes[fileKinds[i]] ?? 0).toDouble(),
+                    value: '${index.kindCounts[fileKinds[i]] ?? 0}',
                     color: insightColors[i],
                     selected: _kind == fileKinds[i],
                     onTap: () => setState(
@@ -165,94 +223,162 @@ class _DownloadsPageState extends State<DownloadsPage> {
           ],
         ],
       ),
-      child: items.isEmpty
+      child: index == null
+          ? const Center(child: CircularProgressIndicator())
+          : index.visibleCount == 0
           ? EmptyState(
               icon: Icons.download_rounded,
-              title: query.isNotEmpty || _kind != null
+              title: query.isNotEmpty || _kind != null || _age != FileAge.all
                   ? '没有匹配的下载文件'
                   : state.scanning
                   ? '正在扫描下载目录…'
-                  : '没有大文件',
-              subtitle: '扫描后会列出下载目录中 ≥10MB 的文件与文件夹',
+                  : category == null
+                  ? '扫描下载文件夹'
+                  : '没有可管理的下载文件',
+              subtitle: '扫描系统下载目录和已识别的软件管家下载目录',
             )
           : Card(
               clipBehavior: Clip.antiAlias,
-              child: ListView.separated(
-                itemCount: items.length,
-                separatorBuilder: (_, _) =>
-                    const Divider(height: 1, color: AppColors.border),
-                itemBuilder: (context, index) {
-                  final item = items[index];
-                  final selected = selectedIds.contains(item.id);
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 4,
-                    ),
-                    leading: Checkbox(
-                      value: selected,
-                      onChanged: state.cleaning || state.scanning
-                          ? null
-                          : (_) => context
-                                .read<AppState>()
-                                .toggleDownloadSelection(item.id),
-                    ),
-                    title: Text(
-                      item.name,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    selected: selected,
-                    selectedTileColor: AppColors.primary.withValues(alpha: .04),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          item.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        const SizedBox(height: 8),
-                        ShareBar(
-                          fraction: totalBytes <= 0
-                              ? 0
-                              : item.sizeBytes / totalBytes,
-                          color:
-                              insightColors[fileKinds.indexOf(
-                                fileKind(item.name),
-                              )],
-                        ),
-                      ],
-                    ),
-                    trailing: SizedBox(
-                      width: 130,
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: SizeText(
-                              item.sizeBytes,
-                              highlight: selected,
+              child: CustomScrollView(
+                slivers: [
+                  for (final group in index.groups) ...[
+                    SliverToBoxAdapter(
+                      child: FileActionsButton.contextMenu(
+                        path: group.path,
+                        allowMove: false,
+                        child: ListTile(
+                          key: ValueKey('download-folder-${group.path}'),
+                          leading: const Icon(
+                            Icons.folder_rounded,
+                            color: AppColors.primary,
+                          ),
+                          title: Text(
+                            group.path,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                          FileActionsButton(
-                            path: item.path,
-                            onMoved: () => state.forgetMovedDownload(item.id),
+                          subtitle: Text(
+                            '${group.indices.length} 项 · ${formatBytes(group.bytes)}',
+                            style: const TextStyle(fontSize: 11),
                           ),
-                        ],
+                          trailing: AnimatedRotation(
+                            turns: _collapsedFolders.contains(group.path)
+                                ? -.25
+                                : 0,
+                            duration: const Duration(milliseconds: 180),
+                            child: const Icon(Icons.expand_more_rounded),
+                          ),
+                          onTap: () => setState(() {
+                            if (!_collapsedFolders.add(group.path)) {
+                              _collapsedFolders.remove(group.path);
+                            }
+                          }),
+                        ),
                       ),
                     ),
-                    onTap: state.cleaning || state.scanning
-                        ? null
-                        : () => context
-                              .read<AppState>()
-                              .toggleDownloadSelection(item.id),
-                  );
-                },
+                    if (!_collapsedFolders.contains(group.path))
+                      SliverList.builder(
+                        itemCount: group.indices.length,
+                        itemBuilder: (context, row) => _downloadTile(
+                          context,
+                          state,
+                          allItems[group.indices[row]],
+                          totalBytes,
+                          selectedIds,
+                        ),
+                      ),
+                    const SliverToBoxAdapter(child: Divider(height: 1)),
+                  ],
+                ],
               ),
             ),
+    );
+  }
+
+  Widget _downloadTile(
+    BuildContext context,
+    AppState state,
+    CleanItem item,
+    int totalBytes,
+    Set<String> selectedIds,
+  ) {
+    final selected = selectedIds.contains(item.id);
+    return FileActionsButton.contextMenu(
+      path: item.path,
+      enabled: !state.scanning && !state.cleaning,
+      allowMove:
+          !item.id.startsWith('dl_dir_') && !item.id.startsWith('dl_software_'),
+      onMoved: () => state.forgetMovedDownload(item.id),
+      actions: [
+        FileMenuAction(
+          selected ? '取消勾选' : '勾选此项',
+          icon: Icons.check_box_outlined,
+          onSelected: () => state.toggleDownloadSelection(item.id),
+        ),
+        FileMenuAction(
+          '删除所选',
+          icon: Icons.delete_outline_rounded,
+          destructive: true,
+          onSelected: selectedIds.isEmpty
+              ? null
+              : () => _confirmDelete(context),
+        ),
+      ],
+      child: ListTile(
+        key: ValueKey(item.id),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        leading: Checkbox(
+          value: selected,
+          onChanged: state.cleaning || state.scanning
+              ? null
+              : (_) =>
+                    context.read<AppState>().toggleDownloadSelection(item.id),
+        ),
+        title: Text(
+          item.name,
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        ),
+        selected: selected,
+        selectedTileColor: AppColors.primary.withValues(alpha: .04),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              item.path,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11),
+            ),
+            const SizedBox(height: 8),
+            ShareBar(
+              fraction: totalBytes <= 0 ? 0 : item.sizeBytes / totalBytes,
+              color: insightColors[fileKinds.indexOf(fileKind(item.name))],
+            ),
+          ],
+        ),
+        trailing: SizedBox(
+          width: 130,
+          child: Row(
+            children: [
+              Expanded(child: SizeText(item.sizeBytes, highlight: selected)),
+              FileActionsButton(
+                path: item.path,
+                allowMove:
+                    !item.id.startsWith('dl_dir_') &&
+                    !item.id.startsWith('dl_software_'),
+                onMoved: () => state.forgetMovedDownload(item.id),
+              ),
+            ],
+          ),
+        ),
+        onTap: state.cleaning || state.scanning
+            ? null
+            : () => context.read<AppState>().toggleDownloadSelection(item.id),
+      ),
     );
   }
 

@@ -16,6 +16,10 @@ class _Service extends StartupService {
       enabled: true,
       group: 'registry',
       canToggle: true,
+      hive: 'CurrentUser',
+      view: 'Registry64',
+      key: r'Software\Microsoft\Windows\CurrentVersion\Run',
+      valueName: 'Registry app',
     ),
     StartupItem(
       name: 'Logon task',
@@ -46,38 +50,35 @@ void main() {
     home: Scaffold(body: StartupPage(service: service)),
   );
 
-  testWidgets(
-    'source filter finds scheduled tasks and read-only rows show details',
-    (tester) async {
-      final service = _Service();
-      await tester.pumpWidget(app(service));
-      await tester.pumpAndSettle();
-      expect(find.text('启动项'), findsNothing);
-      expect(find.text('启动项目'), findsNothing);
-      expect(find.text('Logon task'), findsOneWidget);
-      expect(find.byType(Switch), findsOneWidget);
-      await tester.tap(find.byTooltip('启动项来源'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('计划任务（1）').last);
-      await tester.pumpAndSettle();
-      expect(find.text('Logon task'), findsOneWidget);
-      expect(find.text('Registry app'), findsNothing);
-      expect(find.byType(Switch), findsNothing);
-      await tester.tap(find.text('Logon task'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('只读项目'), findsOneWidget);
-      await tester.tap(find.text('关闭'));
-      await tester.pumpAndSettle();
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+  testWidgets('only manageable rows and relevant source filters are visible', (
+    tester,
+  ) async {
+    final service = _Service();
+    await tester.pumpWidget(app(service));
+    await tester.pumpAndSettle();
+    expect(find.text('Registry app'), findsOneWidget);
+    expect(find.text('Logon task'), findsNothing);
+    expect(find.text('Store declaration'), findsNothing);
+    expect(find.byType(Switch), findsOneWidget);
+    expect(find.text('状态未知'), findsNothing);
+    await tester.tap(find.byTooltip('启动项来源'));
+    await tester.pumpAndSettle();
+    expect(find.text('全部来源（1）'), findsWidgets);
+    expect(find.textContaining('计划任务'), findsNothing);
+    expect(find.textContaining('自动服务'), findsNothing);
+    await tester.tap(find.text('启动文件夹（0）').last);
+    await tester.pumpAndSettle();
+    expect(find.text('没有匹配的启动项'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('unknown package state is not counted as disabled', (
     tester,
   ) async {
     await tester.pumpWidget(app(_Service()));
     await tester.pumpAndSettle();
-    expect(find.text('状态由 Windows 管理'), findsOneWidget);
+    expect(find.text('状态由 Windows 管理'), findsNothing);
+    expect(find.text('状态未知'), findsNothing);
     await tester.tap(find.text('已禁用'));
     await tester.pumpAndSettle();
     expect(find.text('Store declaration'), findsNothing);
@@ -92,19 +93,19 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final service = _Service()..warnings = ['Tasks/Restricted'];
+    final service = _Service()..warnings = ['Registry/Restricted'];
     await tester.pumpWidget(app(service));
     await tester.pumpAndSettle();
     expect(find.textContaining('未能完整读取'), findsOneWidget);
     await tester.tap(find.textContaining('未能完整读取'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Tasks/Restricted'), findsOneWidget);
+    expect(find.textContaining('Registry/Restricted'), findsOneWidget);
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
     service.pending = Completer<List<StartupItem>>();
     await tester.tap(find.byTooltip('刷新'));
     await tester.pump();
-    expect(find.text('Logon task'), findsOneWidget);
+    expect(find.text('Registry app'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(tester.takeException(), isNull);

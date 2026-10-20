@@ -38,7 +38,7 @@ void main() {
   }
 
   setUp(() {
-    fixture = Directory('.dart_tool').createTempSync('audit_test_').absolute;
+    fixture = Directory.systemTemp.createTempSync('audit_test_').absolute;
     env = {
       'USERPROFILE': fixture.path,
       'LOCALAPPDATA': p.join(fixture.path, 'AppData', 'Local'),
@@ -302,8 +302,9 @@ void main() {
     var called = false;
     scan = ScanService(
       environment: env,
+      driveRoots: const [],
       powerShellRunner: (script, timeout) async {
-        called = script.contains('shell:Downloads');
+        called = called || script.contains('shell:Downloads');
         return PsResult(exitCode: 0, stdout: actual, stderr: '');
       },
     );
@@ -412,6 +413,7 @@ void main() {
   test('registry errors visible, targets individual values and report zero disk bytes', () async {
     scan = ScanService(
       environment: env,
+      driveRoots: const [],
       powerShellRunner: (_, _) async =>
           PsResult(exitCode: 1, stdout: '', stderr: 'denied'),
     );
@@ -431,6 +433,7 @@ void main() {
     };
     scan = ScanService(
       environment: env,
+      driveRoots: const [],
       powerShellRunner: (_, _) async =>
           PsResult(exitCode: 0, stdout: jsonEncode([row]), stderr: ''),
     );

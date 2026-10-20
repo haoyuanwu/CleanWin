@@ -61,6 +61,7 @@ class _Preferences extends ModuleCache {
     if (pendingSave != null) await pendingSave!.future;
     setDurable(key, value);
   }
+
   _Preferences(String path)
     : super(
         namespace: 'prefs',
@@ -145,7 +146,7 @@ void main() {
     tester,
   ) async {
     final state = create();
-    await state.scan(force: true);
+    await tester.runAsync(() => state.scan(force: true));
     preferences.pendingSave = Completer<void>();
     preferences.fail = true;
     await tester.pumpWidget(settings(state));
@@ -261,6 +262,12 @@ void main() {
     await tester.pump();
     expect(scan.calls, 1);
     scan.pending!.complete();
+    for (var attempt = 0; state.scanning && attempt < 100; attempt++) {
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
     await tester.pumpAndSettle();
     expect(state.hasResults, true);
     expect(state.scanning, false);
@@ -292,7 +299,7 @@ void main() {
     tester,
   ) async {
     final state = create();
-    await state.scan(force: true);
+    await tester.runAsync(() => state.scan(force: true));
     await tester.pumpWidget(settings(state));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('启动时自动扫描'));
@@ -328,6 +335,13 @@ void main() {
       expect(state.options.autoScanOnStart, true);
       expect(state.scanning, true);
       scan.pending!.complete();
+      for (var attempt = 0; state.scanning && attempt < 100; attempt++) {
+        await tester.pump();
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+      }
+      expect(state.scanning, false);
       await task;
       await tester.pumpAndSettle();
       await tester.pumpWidget(const SizedBox());

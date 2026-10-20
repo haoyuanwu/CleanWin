@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/file_actions.dart';
@@ -14,26 +16,88 @@ import '../services/whitelist_service.dart';
 import '../state/app_state.dart';
 import 'path_picker.dart';
 
+class FileMenuAction {
+  const FileMenuAction(
+    this.label, {
+    required this.icon,
+    required this.onSelected,
+    this.destructive = false,
+  });
+  final String label;
+  final IconData icon;
+  final FutureOr<void> Function()? onSelected;
+  final bool destructive;
+}
+
 class FileActionsButton extends StatelessWidget {
-  const FileActionsButton({super.key, required this.path, this.onMoved})
-    : child = null,
-      enabled = true;
+  const FileActionsButton({
+    super.key,
+    required this.path,
+    this.onMoved,
+    this.allowMove = true,
+    this.actions = const [],
+  }) : child = null,
+       enabled = true;
   const FileActionsButton.contextMenu({
     super.key,
     required this.path,
     required Widget this.child,
     this.onMoved,
     this.enabled = true,
+    this.allowMove = true,
+    this.actions = const [],
   });
   final String path;
   final VoidCallback? onMoved;
   final Widget? child;
   final bool enabled;
-  static const _items = <PopupMenuEntry<String>>[
-    PopupMenuItem(value: 'reveal', child: Text('打开所在位置')),
-    PopupMenuItem(value: 'copy', child: Text('复制路径')),
-    PopupMenuItem(value: 'move', child: Text('移动到其他目录')),
+  final bool allowMove;
+  final List<FileMenuAction> actions;
+  List<PopupMenuEntry<String>> _menu(BuildContext context) => [
+    if (path.trim().isNotEmpty) ...[
+      _entry(context, 'reveal', '打开所在位置', Icons.folder_open_rounded),
+      _entry(context, 'copy', '复制路径', Icons.copy_rounded),
+      if (allowMove)
+        _entry(context, 'move', '移动到其他目录', Icons.drive_file_move_rounded),
+    ],
+    if (actions.isNotEmpty && path.trim().isNotEmpty) const PopupMenuDivider(),
+    for (var i = 0; i < actions.length; i++)
+      _entry(
+        context,
+        'action_$i',
+        actions[i].label,
+        actions[i].icon,
+        enabled: actions[i].onSelected != null,
+        destructive: actions[i].destructive,
+      ),
   ];
+  PopupMenuItem<String> _entry(
+    BuildContext context,
+    String value,
+    String label,
+    IconData icon, {
+    bool enabled = true,
+    bool destructive = false,
+  }) => PopupMenuItem(
+    value: value,
+    enabled: enabled,
+    child: Row(
+      children: [
+        Icon(
+          icon,
+          size: 17,
+          color: destructive ? Theme.of(context).colorScheme.error : null,
+        ),
+        const SizedBox(width: 10),
+        Text(
+          label,
+          style: destructive
+              ? TextStyle(color: Theme.of(context).colorScheme.error)
+              : null,
+        ),
+      ],
+    ),
+  );
   @override
   Widget build(BuildContext context) {
     if (child != null) {
@@ -52,7 +116,7 @@ class FileActionsButton extends StatelessWidget {
                     Rect.fromLTWH(point.dx, point.dy, 0, 0),
                     Offset.zero & overlay.size,
                   ),
-                  items: _items,
+                  items: _menu(context),
                 );
                 if (value != null && context.mounted) {
                   await _perform(context, value);
@@ -64,14 +128,19 @@ class FileActionsButton extends StatelessWidget {
     return PopupMenuButton<String>(
       tooltip: '文件操作',
       icon: const Icon(Icons.more_horiz_rounded, size: 18),
-      itemBuilder: (_) => _items,
+      itemBuilder: _menu,
       onSelected: (value) => _perform(context, value),
     );
   }
 
   Future<void> _perform(BuildContext context, String value) async {
     try {
-      if (value == 'move') {
+      if (value.startsWith('action_')) {
+        final index = int.tryParse(value.substring(7));
+        if (index != null && index >= 0 && index < actions.length) {
+          await actions[index].onSelected?.call();
+        }
+      } else if (value == 'move') {
         final before = await File(path).stat();
         if (!context.mounted) return;
         if (before.type != FileSystemEntityType.file) {

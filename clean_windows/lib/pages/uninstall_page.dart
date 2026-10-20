@@ -2,9 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+
+import '../widgets/file_actions_button.dart';
+
 import 'package:provider/provider.dart';
 
 import '../models/installed_app.dart';
+import '../services/file_actions.dart';
 import '../services/path_utils.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -270,15 +274,35 @@ class _UninstallPageState extends State<UninstallPage> {
                             itemCount: apps.length,
                             itemBuilder: (context, index) {
                               final app = apps[index];
-                              return _AppRow(
-                                app: app,
-                                fraction: knownBytes <= 0
-                                    ? 0
-                                    : app.estimatedSizeBytes / knownBytes,
-                                onUninstall:
-                                    state.loadingApps || !app.canUninstall
-                                    ? null
-                                    : () => _confirmUninstall(app),
+                              return FileActionsButton.contextMenu(
+                                path:
+                                    app.installLocation ??
+                                    FileActions.executablePath(
+                                      app.displayIcon ?? '',
+                                    ) ??
+                                    '',
+                                allowMove: false,
+                                actions: [
+                                  FileMenuAction(
+                                    '卸载软件',
+                                    icon: Icons.delete_outline_rounded,
+                                    destructive: true,
+                                    onSelected:
+                                        state.loadingApps || !app.canUninstall
+                                        ? null
+                                        : () => _confirmUninstall(app),
+                                  ),
+                                ],
+                                child: _AppRow(
+                                  app: app,
+                                  fraction: knownBytes <= 0
+                                      ? 0
+                                      : app.estimatedSizeBytes / knownBytes,
+                                  onUninstall:
+                                      state.loadingApps || !app.canUninstall
+                                      ? null
+                                      : () => _confirmUninstall(app),
+                                ),
                               );
                             },
                           ),

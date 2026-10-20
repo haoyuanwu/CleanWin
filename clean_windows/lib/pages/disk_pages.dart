@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -251,7 +253,7 @@ class _DiskAnalysisPageState extends State<DiskAnalysisPage> {
           ModuleInsights(
             label: _loading ? '已分析空间 · 持续更新' : '当前目录已读取空间',
             value: current == null ? '—' : formatBytes(current.sizeBytes),
-            hint: '点击目录色签下钻查看',
+
             busy: _loading,
             icon: Icons.storage_rounded,
             segments: [
@@ -421,63 +423,75 @@ class _DiskAnalysisPageState extends State<DiskAnalysisPage> {
               itemCount: current.children.length,
               itemBuilder: (context, i) {
                 final c = current.children[i];
-                return ListTile(
-                  dense: true,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 2,
-                  ),
-                  leading: Icon(
-                    c.isDirectory
-                        ? Icons.folder_rounded
-                        : Icons.insert_drive_file_rounded,
-                    color: c.isDirectory
-                        ? AppColors.primary
-                        : AppColors.textSecondary,
-                    size: 20,
-                  ),
-                  title: Text(c.name, style: const TextStyle(fontSize: 13)),
-                  subtitle: Padding(
-                    padding: const EdgeInsets.only(top: 8, right: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (_previousSizes != null)
-                          Text(
-                            '较上次 ${c.sizeBytes >= (_previousSizes![c.path] ?? 0) ? '+' : '−'}${formatBytes((c.sizeBytes - (_previousSizes![c.path] ?? 0)).abs())}',
-                            style: const TextStyle(fontSize: 10),
+                return FileActionsButton.contextMenu(
+                  path: c.path,
+                  allowMove: false,
+                  actions: [
+                    if (c.isDirectory)
+                      FileMenuAction(
+                        '进入目录',
+                        icon: Icons.folder_open_rounded,
+                        onSelected: () => _push(c),
+                      ),
+                  ],
+                  child: ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 2,
+                    ),
+                    leading: Icon(
+                      c.isDirectory
+                          ? Icons.folder_rounded
+                          : Icons.insert_drive_file_rounded,
+                      color: c.isDirectory
+                          ? AppColors.primary
+                          : AppColors.textSecondary,
+                      size: 20,
+                    ),
+                    title: Text(c.name, style: const TextStyle(fontSize: 13)),
+                    subtitle: Padding(
+                      padding: const EdgeInsets.only(top: 8, right: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (_previousSizes != null)
+                            Text(
+                              '较上次 ${c.sizeBytes >= (_previousSizes![c.path] ?? 0) ? '+' : '−'}${formatBytes((c.sizeBytes - (_previousSizes![c.path] ?? 0)).abs())}',
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                          ShareBar(
+                            fraction: current.sizeBytes <= 0
+                                ? 0
+                                : c.sizeBytes / current.sizeBytes,
                           ),
-                        ShareBar(
-                          fraction: current.sizeBytes <= 0
-                              ? 0
-                              : c.sizeBytes / current.sizeBytes,
+                        ],
+                      ),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 70,
+                          child: Text(
+                            c.isDirectory ? '${c.fileCount}' : '',
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 80,
+                          child: SizeText(
+                            c.sizeBytes,
+                            highlight: c.sizeBytes > 200 * 1024 * 1024,
+                          ),
                         ),
                       ],
                     ),
+                    onTap: c.isDirectory ? () => _push(c) : null,
                   ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 70,
-                        child: Text(
-                          c.isDirectory ? '${c.fileCount}' : '',
-                          style: const TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                      SizedBox(
-                        width: 80,
-                        child: SizeText(
-                          c.sizeBytes,
-                          highlight: c.sizeBytes > 200 * 1024 * 1024,
-                        ),
-                      ),
-                    ],
-                  ),
-                  onTap: c.isDirectory ? () => _push(c) : null,
                 );
               },
             ),
@@ -571,6 +585,7 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
   late final _service = widget.service ?? LargeFileService();
   final List<FileEntry> _files = [];
   final _cancel = CancelToken();
+  Timer? _resultFlushTimer;
   bool _scanning = false;
   int _thresholdMb = 500;
   String _root = 'C:\\';
@@ -621,6 +636,7 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
   @override
   void dispose() {
     _cancel.cancel();
+    _resultFlushTimer?.cancel();
     _deleteCancellation?.cancel();
     TaskBoard.instance.finish(_largeTaskId);
     super.dispose();
@@ -629,11 +645,13 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
   Future<void> _scan() async {
     if (_scanning || _deleting) return;
     _cancel.reset();
+    _lastUiFlush = DateTime.fromMillisecondsSinceEpoch(0);
     TaskBoard.instance.update(_largeTaskId, '大文件扫描', _root, cancel: _stopScan);
     setState(() {
       _scanning = true;
       _notice = null;
       _files.clear();
+      _visibleLimit = 200;
       _found = 0;
       _currentDir = '';
     });
@@ -643,10 +661,16 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
       if (batch.isEmpty || !mounted) return;
       setState(() {
         _files.addAll(batch);
+        _found = _files.length;
         batch.clear();
       });
     }
 
+    _resultFlushTimer?.cancel();
+    _resultFlushTimer = Timer.periodic(
+      const Duration(milliseconds: 250),
+      (_) => flush(),
+    );
     try {
       await for (final f in _service.scanLargeFiles(
         _root,
@@ -671,7 +695,8 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
         },
       )) {
         batch.add(f);
-        if (batch.length >= 20) flush();
+        // Show the first match immediately; publish subsequent matches on the timer.
+        if (_files.isEmpty) flush();
       }
       flush();
       await _service.saveCached(_root, _thresholdMb * 1024 * 1024, _files);
@@ -681,9 +706,13 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
     } on Exception catch (_) {
       _notice = '扫描未完整完成，当前保留已发现的文件';
       flush();
+    } finally {
+      _resultFlushTimer?.cancel();
+      _resultFlushTimer = null;
+      flush();
+      TaskBoard.instance.finish(_largeTaskId);
+      if (mounted) setState(() => _scanning = false);
     }
-    TaskBoard.instance.finish(_largeTaskId);
-    if (mounted) setState(() => _scanning = false);
   }
 
   void _stopScan() {
@@ -782,7 +811,7 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
           ModuleInsights(
             label: '已发现大文件 · ${_files.length} 项',
             value: formatBytes(totalBytes),
-            hint: '圆环按容量分布 · 点击类型筛选',
+
             busy: _scanning,
             icon: Icons.data_usage_rounded,
             segments: [
@@ -887,6 +916,14 @@ class _LargeFilesPageState extends State<LargeFilesPage> {
                         return FileActionsButton.contextMenu(
                           path: f.path,
                           enabled: !_deleting && !_scanning,
+                          actions: [
+                            FileMenuAction(
+                              f.selected ? '取消勾选' : '勾选此项',
+                              icon: Icons.check_box_outlined,
+                              onSelected: () =>
+                                  setState(() => f.selected = !f.selected),
+                            ),
+                          ],
                           onMoved: () {
                             if (mounted) setState(() => _files.remove(f));
                             _service.saveCached(

@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'common.dart';
 
+export '../services/file_types.dart';
+
 const insightColors = <Color>[
   AppColors.primary,
   AppColors.accent,
@@ -327,17 +329,3 @@ IconData _segmentIcon(String label) => switch (label) {
   '已关闭' => Icons.remove_circle_outline_rounded,
   _ => Icons.circle,
 };
-
-String fileKind(String name) {
-  final extension = name.contains('.')
-      ? name.split('.').last.toLowerCase()
-      : '';
-  return switch (extension) {
-    'zip' || 'rar' || '7z' || 'tar' || 'gz' || 'iso' => '压缩 / 镜像',
-    'mp4' || 'mkv' || 'avi' || 'mov' || 'mp3' || 'wav' || 'flac' => '影音',
-    'exe' || 'msi' || 'msix' || 'apk' => '安装包',
-    _ => '其他',
-  };
-}
-
-const fileKinds = ['压缩 / 镜像', '影音', '安装包', '其他'];

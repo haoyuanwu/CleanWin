@@ -14,7 +14,7 @@ class CosmicColors {
   static const violet = Color(0xFFB09BFF);
 }
 
-/// Smart cleanup uses the existing deletion service, with a narrower scope.
+/// Cache categories; selected personal files always require confirmation.
 const cosmicSmartCategories = {
   CleanCategory.systemCache,
   CleanCategory.browserCache,
@@ -159,6 +159,20 @@ class _CosmicOrbitState extends State<CosmicOrbit>
       angle: .6,
       color: Color(0xFFF5C985),
     ),
+    (
+      category: CleanCategory.recycleBin,
+      label: '回收站',
+      icon: Icons.delete_outline_rounded,
+      angle: -math.pi / 2,
+      color: Color(0xFF9BD8A7),
+    ),
+    (
+      category: CleanCategory.downloads,
+      label: '下载',
+      icon: Icons.download_rounded,
+      angle: math.pi / 2,
+      color: Color(0xFFFFB7CD),
+    ),
   ];
   @override
   void didChangeDependencies() {
@@ -271,7 +285,7 @@ class _CosmicOrbitState extends State<CosmicOrbit>
                         message:
                             widget.hasResults &&
                                 widget.results.containsKey(node.category)
-                            ? '查看${node.category.title}'
+                            ? '${node.category.title} · 已选 ${formatBytes(widget.results[node.category]!.selectedSizeBytes)} / 共 ${formatBytes(widget.results[node.category]!.totalSizeBytes)}，点击查看'
                             : '${node.category.title} · 等待扫描',
                         child: TextButton(
                           key: ValueKey('orbit-${node.category.name}'),
@@ -333,15 +347,29 @@ class _CosmicOrbitState extends State<CosmicOrbit>
                               ),
                               if (widget.hasResults &&
                                   widget.results.containsKey(node.category))
-                                Text(
-                                  formatBytes(
-                                    widget
-                                        .results[node.category]!
-                                        .totalSizeBytes,
+                                TweenAnimationBuilder<double>(
+                                  key: ValueKey(
+                                    'orbit-selected-${node.category.name}',
                                   ),
-                                  style: TextStyle(
-                                    fontSize: 9,
-                                    color: node.color,
+                                  tween: Tween(
+                                    begin: 0,
+                                    end: widget
+                                        .results[node.category]!
+                                        .selectedSizeBytes
+                                        .toDouble(),
+                                  ),
+                                  duration:
+                                      MediaQuery.disableAnimationsOf(context)
+                                      ? Duration.zero
+                                      : const Duration(milliseconds: 300),
+                                  curve: Curves.easeOutCubic,
+                                  builder: (_, value, _) => Text(
+                                    '已选 ${formatBytes(value.round())}',
+                                    maxLines: 1,
+                                    style: TextStyle(
+                                      fontSize: 9,
+                                      color: node.color,
+                                    ),
                                   ),
                                 ),
                             ],

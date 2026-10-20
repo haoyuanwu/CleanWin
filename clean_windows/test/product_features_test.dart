@@ -24,14 +24,13 @@ import 'package:path/path.dart' as p;
 void main() {
   late Directory fixture;
   setUp(
-    () =>
-        fixture = Directory('.dart_tool')
-            .createTempSync('product_features_')
-            .absolute,
+    () => fixture = Directory.systemTemp
+        .createTempSync('product_features_')
+        .absolute,
   );
   tearDown(() {
     expect(
-      p.isWithin(Directory('.dart_tool').absolute.path, fixture.path),
+      p.isWithin(Directory.systemTemp.absolute.path, fixture.path),
       isTrue,
     );
     fixture.deleteSync(recursive: true);
@@ -253,7 +252,10 @@ void main() {
       }
       final token = CleanCancellation();
       final service = ScanService(
+        driveRoots: const [],
         environment: {
+          'DOWNLOADS': p.join(fixture.path, 'Downloads'),
+          'USER_SID': 'S-1-5-21-100',
           'USERPROFILE': fixture.path,
           'LOCALAPPDATA': local,
           'APPDATA': p.join(fixture.path, 'Roaming'),
@@ -279,7 +281,10 @@ void main() {
       put(p.join('Local', 'Code', 'Cache', 'data'), 'code');
       put(p.join('Local', 'Pub', 'Cache', 'package.dart'), 'dependency');
       final service = ScanService(
+        driveRoots: const [],
         environment: {
+          'DOWNLOADS': p.join(fixture.path, 'Downloads'),
+          'USER_SID': 'S-1-5-21-100',
           'USERPROFILE': fixture.path,
           'LOCALAPPDATA': local,
           'APPDATA': p.join(fixture.path, 'Roaming'),

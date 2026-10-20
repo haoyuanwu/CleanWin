@@ -82,7 +82,7 @@ class _SettingsPageState extends State<SettingsPage> {
             child: ModuleInsights(
               label: '当前配置',
               value: '${scanEnabled + behaviorEnabled} 项已开启',
-              hint: '点击色签定位设置',
+
               icon: Icons.tune_rounded,
               segments: [
                 InsightSegment(

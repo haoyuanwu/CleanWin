@@ -62,7 +62,6 @@ class CleanOverview extends StatefulWidget {
     required this.cleanedAt,
     required this.onCategory,
     required this.onSmartClean,
-    required this.smartBytes,
     required this.onViewResults,
   });
   final AppState state;
@@ -72,7 +71,6 @@ class CleanOverview extends StatefulWidget {
   final VoidCallback? onSmartClean;
   final ValueChanged<CleanCategory> onCategory;
   final DateTime? cleanedAt;
-  final int smartBytes;
   @override
   State<CleanOverview> createState() => _CleanOverviewState();
 }
@@ -148,7 +146,9 @@ class _CleanOverviewState extends State<CleanOverview> {
                 state.scanning
                     ? '正在探测磁盘星域'
                     : _celebrating
-                    ? '清理完成 · 空间已释放'
+                    ? state.lastFreedBytes > 0
+                          ? '清理完成 · 空间已释放'
+                          : '清理完成 · 文件已处理'
                     : incomplete
                     ? '部分内容未完成 · 请核对提示'
                     : widget.hasResults
@@ -167,7 +167,9 @@ class _CleanOverviewState extends State<CleanOverview> {
             alignment: Alignment.centerLeft,
             child: Text(
               _celebrating
-                  ? '为电脑释放了\n${formatBytes(state.lastFreedBytes)} 空间'
+                  ? state.lastFreedBytes > 0
+                        ? '为电脑释放了\n${formatBytes(state.lastFreedBytes)} 空间'
+                        : '本次清理已完成\n文件已安全处理'
                   : '为你的电脑\n释放一片星空',
               style: TextStyle(
                 fontSize: widget.hasResults ? 26 : 31,
@@ -255,7 +257,9 @@ class _CleanOverviewState extends State<CleanOverview> {
       onCategory: widget.onCategory,
       center: Semantics(
         button: true,
-        label: widget.hasResults ? '清理推荐缓存' : '扫描磁盘',
+        label: widget.hasResults
+            ? '已选总量 ${formatBytes(state.totalSelectedBytes)}，点击清理已选项目'
+            : '扫描磁盘',
         child: InkWell(
           customBorder: const CircleBorder(),
           onTap: busy
@@ -290,7 +294,8 @@ class _CleanOverviewState extends State<CleanOverview> {
                   )
                 else if (widget.hasResults)
                   AnimatedByteCount(
-                    bytes: widget.smartBytes,
+                    key: const ValueKey('orbit-selected-total'),
+                    bytes: state.totalSelectedBytes,
                     style: const TextStyle(
                       fontSize: 27,
                       color: Colors.white,
@@ -311,7 +316,7 @@ class _CleanOverviewState extends State<CleanOverview> {
                   state.scanning
                       ? '扫描进行中'
                       : widget.hasResults
-                      ? '可智能清理'
+                      ? '已选总量'
                       : '开启空间探索',
                   style: const TextStyle(
                     fontSize: 11,
@@ -412,10 +417,10 @@ class _CleanOverviewState extends State<CleanOverview> {
                 label: widget.hasResults ? '已探测内容' : '探索范围',
                 value: widget.hasResults
                     ? formatBytes(state.totalFoundBytes)
-                    : '当前用户缓存',
+                    : '缓存 · 回收站 · 下载',
                 detail: widget.hasResults
                     ? '${state.results.length} 个星域已检查'
-                    : '跳过系统维护和个人文件',
+                    : '下载和回收站默认不勾选',
               ),
               const _MetricPanel(
                 icon: Icons.shield_outlined,

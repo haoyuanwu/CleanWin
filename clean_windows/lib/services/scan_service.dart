@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'cache_discovery.dart';
 import 'file_safety.dart';
 import 'file_operability.dart';
+import 'download_discovery.dart';
 
 import '../models/clean_models.dart';
 import '../models/scan_options.dart';
@@ -31,6 +32,7 @@ class ScanService {
   final PowerShellRunner _runPowerShell;
   final Future<Set<String>> Function(List<String>) _operabilityProbe;
   bool _oneClick = false;
+  List<String>? _resolvedDriveRoots;
   CleanCancellation? cancellation;
   void Function(int, int, String)? _onPermissionProgress;
   bool get _cancelled => cancellation?.requested ?? false;
@@ -78,6 +80,7 @@ class ScanService {
   }) async {
     if (whitelist?.readable == false) throw StateError(whitelist!.lastError!);
     _scannedPaths.clear();
+    _resolvedDriveRoots = null;
     _oneClick = categories == null;
     // Specialized categories own their files before generic cache discovery.
     const order = [
@@ -798,33 +801,37 @@ class ScanService {
     if (!RegExp(r'^S-1-\d+(?:-\d+)+$').hasMatch(sid)) {
       throw const FileSystemException('无法确认当前用户的回收站');
     }
-    var drives = driveRoots;
-    if (drives == null) {
-      final result = await _runPowerShell(r'''
+    final drives = await _readyDriveRoots();
+    final items = <CleanItem>[];
+    for (final root in drives) {
+      if (_cancelled) break;
+      final item = await _dirItem(
+        id: 'recycle_$root',
+        name: '回收站 · $root',
+        path: p.join(root, r'$Recycle.Bin', sid),
+        category: CleanCategory.recycleBin,
+        note: '手动选择；清空后无法从回收站恢复',
+      );
+      if (item.fileCount > 0) items.add(item);
+    }
+    return items;
+  }
+
+  Future<List<String>> _readyDriveRoots() async {
+    if (_resolvedDriveRoots != null) return _resolvedDriveRoots!;
+    if (driveRoots != null) return _resolvedDriveRoots = driveRoots!;
+    final result = await _runPowerShell(r'''
 $ErrorActionPreference = 'Stop'
 $roots = @([IO.DriveInfo]::GetDrives() | Where-Object {
   $_.IsReady -and ($_.DriveType -eq 'Fixed' -or $_.DriveType -eq 'Removable')
 } | ForEach-Object { $_.RootDirectory.FullName })
 ConvertTo-Json -InputObject @($roots) -Compress
 ''', const Duration(seconds: 10));
-      if (!result.success) {
-        throw FileSystemException('无法枚举回收站磁盘', result.stderr);
-      }
-      // String arrays are decoded separately from record-based JSON helpers.
-      drives = _decodeDriveRoots(result.stdout);
+    if (!result.success) {
+      throw FileSystemException('无法枚举回收站磁盘', result.stderr);
     }
-    final items = <CleanItem>[];
-    for (final root in drives) {
-      final item = await _dirItem(
-        id: 'recycle_$root',
-        name: '回收站 · $root',
-        path: p.join(root, r'$Recycle.Bin', sid),
-        category: CleanCategory.recycleBin,
-        note: '仅清理当前用户在此磁盘已扫描的回收站文件',
-      );
-      if (item.fileCount > 0) items.add(item);
-    }
-    return items;
+    // String arrays are decoded separately from record-based JSON helpers.
+    return _resolvedDriveRoots = _decodeDriveRoots(result.stdout);
   }
 
   Future<List<CleanItem>> _scanNvidiaCache() async {
@@ -899,34 +906,64 @@ ConvertTo-Json -InputObject @($roots) -Compress
 
   Future<List<CleanItem>> _scanDownloads() async {
     final items = <CleanItem>[];
-    final dir = Directory(await _downloadsPath());
-
-    final children = await _children(dir);
-
-    for (final child in children) {
-      if (child is File) {
-        final item = await _fileItem(
-          id: 'dl_${child.path}',
-          name: p.basename(child.path),
-          path: child.path,
-          category: CleanCategory.downloads,
-        );
-        if (item.sizeBytes >= 10 * 1024 * 1024) items.add(item);
-      } else if (child is Directory) {
+    var roots = const <String>[];
+    try {
+      roots = await _readyDriveRoots();
+    } on Exception {
+      _scanIssues.add('部分磁盘未能枚举，下载结果仅包含已定位目录');
+    }
+    final locations = await DownloadDiscovery(
+      _environment,
+      _runPowerShell,
+    ).discover(await _downloadsPath(), roots, cancelled: () => _cancelled);
+    for (final location in locations) {
+      if (_cancelled) break;
+      if (_excluded(location.path, CleanCategory.downloads) ||
+          await hasLinkedAncestorAsync(location.path)) {
+        continue;
+      }
+      if (location.software) {
         final item = await _dirItem(
-          id: 'dl_dir_${child.path}',
-          name: '${child.path.split(Platform.pathSeparator).last}/',
-          path: child.path,
+          id: 'dl_software_${location.path}',
+          name: '${location.source} · ${p.basename(location.path)}',
+          path: location.path,
           category: CleanCategory.downloads,
+          appName: location.source,
+          nameFilter: isDownloadedSoftwarePackage,
+          recursive: location.recursive,
+          note: '仅下载包，不含配置和未完成下载；手动选择后移入回收站',
         );
-        if (item.sizeBytes >= 10 * 1024 * 1024) {
-          item.selected = false;
-          items.add(item);
+        if (item.fileCount > 0) items.add(item);
+        continue;
+      }
+      final dir = Directory(location.path);
+
+      final children = await _children(dir);
+
+      for (final child in children) {
+        if (child is File) {
+          final item = await _fileItem(
+            id: 'dl_${child.path}',
+            name: p.basename(child.path),
+            path: child.path,
+            category: CleanCategory.downloads,
+          );
+          if (item.sizeBytes >= 10 * 1024 * 1024) items.add(item);
+        } else if (child is Directory) {
+          final item = await _dirItem(
+            id: 'dl_dir_${child.path}',
+            name: '${child.path.split(Platform.pathSeparator).last}/',
+            path: child.path,
+            category: CleanCategory.downloads,
+          );
+          if (item.sizeBytes >= 10 * 1024 * 1024) {
+            item.selected = false;
+            items.add(item);
+          }
         }
       }
     }
-
-    items.sort((a, b) => b.sizeBytes.compareTo(a.sizeBytes));
+    // DownloadsPage groups and sorts large result sets on a worker isolate.
     return items;
   }
 

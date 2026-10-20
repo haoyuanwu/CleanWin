@@ -31,13 +31,11 @@ void main() {
   late Directory fixture;
   setUp(() {
     AppState.debugSkipProcess = true;
-    fixture = Directory('.dart_tool')
-        .createTempSync('cancel_cleanup_')
-        .absolute;
+    fixture = Directory.systemTemp.createTempSync('cancel_cleanup_').absolute;
   });
   tearDown(() {
     expect(
-      p.isWithin(Directory('.dart_tool').absolute.path, fixture.path),
+      p.isWithin(Directory.systemTemp.absolute.path, fixture.path),
       isTrue,
     );
     fixture.deleteSync(recursive: true);

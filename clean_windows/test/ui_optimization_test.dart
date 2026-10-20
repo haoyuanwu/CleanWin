@@ -18,6 +18,7 @@ import 'package:clean_windows/services/scan_service.dart';
 import 'package:clean_windows/services/whitelist_service.dart';
 import 'package:clean_windows/state/app_state.dart';
 import 'package:clean_windows/theme/app_theme.dart';
+import 'package:clean_windows/widgets/clean_overview.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -189,7 +190,7 @@ void main() {
   testWidgets(
     'download search clears and confirmation shows only download size',
     (tester) async {
-      await state.scan(force: true);
+      await tester.runAsync(() => state.scan(force: true));
       state.toggleDownloadSelection(CleanCategory.downloads.name);
       await tester.pumpWidget(page(const DownloadsPage()));
       await tester.ensureVisible(find.byTooltip('搜索'));
@@ -211,12 +212,133 @@ void main() {
     },
   );
 
+  testWidgets(
+    'cleanup footer includes manual selections and updates when unchecked',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 900);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      await tester.runAsync(() => state.scan(force: true));
+      await tester.pumpWidget(page(const CleanPage()));
+      await tester.pumpAndSettle();
+      final amount = find.byKey(const ValueKey('clean-selected-total'));
+      void expectBytes(int bytes) {
+        expect(tester.widget<AnimatedByteCount>(amount).bytes, bytes);
+      }
+
+      const mb = 1024 * 1024;
+      expectBytes(48 * mb);
+      await tester.tap(find.text('查看结果'));
+      await tester.pumpAndSettle();
+      final downloads = state.results[CleanCategory.downloads]!;
+      final folderCard = find.byKey(const ValueKey('downloads-false'));
+      final categoryCheckbox = find.descendant(
+        of: folderCard,
+        matching: find.byType(Checkbox),
+      );
+      await tester.ensureVisible(categoryCheckbox);
+      await tester.tap(categoryCheckbox);
+      await tester.pumpAndSettle();
+      expectBytes(96 * mb);
+      expect(find.text('已选 · 2 项'), findsOneWidget);
+      expect(find.text('缓存 48.0 MB · 其他所选 48.0 MB'), findsOneWidget);
+      state.toggleItem(downloads.items.single);
+      await tester.pumpAndSettle();
+      expectBytes(48 * mb);
+      expect(find.text('清理其他所选'), findsNothing);
+      state.toggleCategory(state.results[CleanCategory.systemCache]!, false);
+      await tester.pumpAndSettle();
+      expectBytes(0);
+      expect(find.text('已选 · 0 项'), findsOneWidget);
+      state.toggleCategory(downloads, true);
+      await tester.pumpAndSettle();
+      expectBytes(48 * mb);
+      final smart = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, '智能清理'),
+      );
+      expect(smart.onPressed, isNotNull);
+      expect(find.text('清理其他所选'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('planet totals and category satellites follow selected items', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 900);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    await tester.runAsync(() => state.scan(force: true));
+    await tester.pumpWidget(page(const CleanPage()));
+    await tester.pumpAndSettle();
+    const mb = 1024 * 1024;
+    final system = state.results[CleanCategory.systemCache]!;
+    final downloads = state.results[CleanCategory.downloads]!;
+    void expectTotal(int bytes) {
+      expect(
+        tester
+            .widget<AnimatedByteCount>(
+              find.byKey(const ValueKey('orbit-selected-total')),
+            )
+            .bytes,
+        bytes,
+      );
+      expect(
+        tester
+            .widget<AnimatedByteCount>(
+              find.byKey(const ValueKey('clean-selected-total')),
+            )
+            .bytes,
+        bytes,
+      );
+    }
+
+    void expectSatellite(CleanCategory category, String amount) {
+      expect(
+        find.descendant(
+          of: find.byKey(ValueKey('orbit-selected-${category.name}')),
+          matching: find.text('已选 $amount'),
+        ),
+        findsOneWidget,
+      );
+    }
+
+    expectTotal(48 * mb);
+    expectSatellite(CleanCategory.downloads, '0 B');
+    state.toggleCategory(downloads, true);
+    await tester.pumpAndSettle();
+    expectTotal(96 * mb);
+    expectSatellite(CleanCategory.downloads, '48.0 MB');
+    state.toggleItem(system.items.single);
+    await tester.pumpAndSettle();
+    expectTotal(48 * mb);
+    expectSatellite(CleanCategory.systemCache, '0 B');
+    state.toggleCategory(downloads, false);
+    await tester.pumpAndSettle();
+    expectTotal(0);
+    expectSatellite(CleanCategory.downloads, '0 B');
+    state.toggleItem(downloads.items.single);
+    await tester.pumpAndSettle();
+    expectTotal(48 * mb);
+    expect(
+      find.byTooltip('下载文件夹 · 已选 48.0 MB / 共 48.0 MB，点击查看'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('clean category filter preserves the underlying selections', (
     tester,
   ) async {
-    await state.scan(force: true);
+    await tester.runAsync(() => state.scan(force: true));
     await tester.pumpWidget(page(const CleanPage()));
     await tester.pumpAndSettle();
+    expect(find.text('只看有结果'), findsNothing);
+    expect(find.text('点击分类查看文件'), findsNothing);
+    expect(find.text('已就绪，可展开预览'), findsNothing);
     await tester.tap(find.text('查看结果'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byTooltip('搜索'));
@@ -241,7 +363,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       for (final index in [0, 1]) {
-        if (index == 1) await state.scan(force: true);
+        if (index == 1) await tester.runAsync(() => state.scan(force: true));
         final key = GlobalKey();
         await tester.pumpWidget(
           RepaintBoundary(

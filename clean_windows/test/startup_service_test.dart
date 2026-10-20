@@ -66,8 +66,8 @@ void main() {
         ]),
       );
       final items = await service.list(force: true);
-      expect(items, hasLength(5));
-      expect(items.map((item) => item.id).toSet(), hasLength(5));
+      expect(items, hasLength(4));
+      expect(items.map((item) => item.id).toSet(), hasLength(4));
     },
   );
 
@@ -86,6 +86,63 @@ void main() {
       expect(service.warnings, ['Tasks/Restricted']);
       expect(await service.list(), hasLength(1));
       expect(calls, 1);
+    },
+  );
+
+  test(
+    'only supported switchable items survive scans and cached reads',
+    () async {
+      cache.set('startup_sources_v3', {
+        'Items': [row(name: 'Old cache')],
+        'Warnings': [],
+      });
+      var calls = 0;
+      final service = StartupService(
+        cache: cache,
+        powerShellRunner: (_, _) async {
+          calls++;
+          return output([
+            row(name: 'Enabled'),
+            row(name: 'Disabled', disabled: true),
+            {...row(name: 'Read only'), 'CanToggle': false},
+            {...row(name: 'Unknown'), 'StateKnown': false},
+            {...row(name: 'Task'), 'Group': 'task'},
+            {...row(name: 'Invalid target'), 'Key': r'SYSTEM\Critical'},
+            {
+              'Name': 'Folder',
+              'Group': 'folder',
+              'Location': 'StartupFolder-User',
+              'SourceFile': r'C:\Startup\app.lnk',
+              'StateKnown': true,
+              'CanToggle': true,
+            },
+          ]);
+        },
+      );
+      expect((await service.list()).map((item) => item.name), [
+        'Disabled',
+        'Enabled',
+        'Folder',
+      ]);
+      expect((await service.list()).every((item) => item.canManage), true);
+      expect(calls, 1);
+    },
+  );
+
+  test(
+    'scanner excludes unsupported sources instead of enumerating then hiding',
+    () {
+      for (final source in [
+        'GetTasks(',
+        'Get-CimInstance',
+        'Get-AppxPackage',
+        'Winlogon',
+        "'Policies'",
+      ]) {
+        expect(startupScanScript, isNot(contains(source)));
+      }
+      expect(startupScanScript, contains(r'OpenSubKey($readPath, $true)'));
+      expect(startupScanScript, contains('CleanWinStartupAccess'));
     },
   );
 

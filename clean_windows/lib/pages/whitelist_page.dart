@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+
+import '../widgets/file_actions_button.dart';
+
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -80,7 +83,7 @@ class _WhitelistPageState extends State<WhitelistPage> {
           ModuleInsights(
             label: '受保护路径',
             value: '${allEntries.length} 项',
-            hint: '点击磁盘筛选 · 扫描与清理时跳过',
+            hint: '扫描与清理时跳过',
             icon: Icons.shield_outlined,
             segments: [
               for (var i = 0; i < drives.length; i++)
@@ -126,55 +129,69 @@ class _WhitelistPageState extends State<WhitelistPage> {
                 separatorBuilder: (_, _) => const Divider(height: 1),
                 itemBuilder: (context, index) {
                   final entry = entries[index];
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 6,
-                    ),
-                    leading: const Icon(
-                      Icons.folder_special_outlined,
-                      color: AppColors.success,
-                    ),
-                    title: Text(
-                      entry.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Tooltip(
-                      message: entry.path,
-                      child: Text(
-                        '${entry.path}\n添加于 ${_formatDate(entry.addedAt)}',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11),
+                  return FileActionsButton.contextMenu(
+                    path: entry.path,
+                    allowMove: false,
+                    actions: [
+                      FileMenuAction(
+                        '移除保护',
+                        icon: Icons.remove_moderator_outlined,
+                        destructive: true,
+                        onSelected: state.scanning || state.cleaning
+                            ? null
+                            : () => _confirmRemove(context, entry.path),
                       ),
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: '复制路径',
-                          icon: const Icon(Icons.copy_rounded, size: 17),
-                          onPressed: () async {
-                            await Clipboard.setData(
-                              ClipboardData(text: entry.path),
-                            );
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('路径已复制')),
-                            );
-                          },
+                    ],
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 6,
+                      ),
+                      leading: const Icon(
+                        Icons.folder_special_outlined,
+                        color: AppColors.success,
+                      ),
+                      title: Text(
+                        entry.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Tooltip(
+                        message: entry.path,
+                        child: Text(
+                          '${entry.path}\n添加于 ${_formatDate(entry.addedAt)}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
                         ),
-                        TextButton(
-                          onPressed: state.scanning || state.cleaning
-                              ? null
-                              : () => _confirmRemove(context, entry.path),
-                          style: TextButton.styleFrom(
-                            foregroundColor: AppColors.danger,
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: '复制路径',
+                            icon: const Icon(Icons.copy_rounded, size: 17),
+                            onPressed: () async {
+                              await Clipboard.setData(
+                                ClipboardData(text: entry.path),
+                              );
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('路径已复制')),
+                              );
+                            },
                           ),
-                          child: const Text('移除'),
-                        ),
-                      ],
+                          TextButton(
+                            onPressed: state.scanning || state.cleaning
+                                ? null
+                                : () => _confirmRemove(context, entry.path),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppColors.danger,
+                            ),
+                            child: const Text('移除'),
+                          ),
+                        ],
+                      ),
                     ),
                   );
                 },

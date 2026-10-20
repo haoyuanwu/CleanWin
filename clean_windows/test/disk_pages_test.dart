@@ -73,6 +73,43 @@ class _PendingDisk extends _Disk {
   }
 }
 
+class _StreamingLarge extends LargeFileService {
+  final controller = StreamController<FileEntry>();
+  CancelToken? token;
+  List<FileEntry>? saved;
+  @override
+  List<FileEntry> loadCached(String root, int minBytes) => [];
+  @override
+  Future<void> saveCached(
+    String root,
+    int minBytes,
+    List<FileEntry> files,
+  ) async {
+    saved = List.of(files);
+  }
+
+  @override
+  Stream<FileEntry> scanLargeFiles(
+    String root, {
+    int minBytes = 500 * 1024 * 1024,
+    void Function(int found, String currentDir)? onProgress,
+    CancelToken? cancel,
+  }) {
+    token = cancel;
+    onProgress?.call(0, root);
+    return controller.stream;
+  }
+
+  void discover(String name, int mb) => controller.add(
+    FileEntry(
+      path: 'C:\\Test\\$name',
+      name: name,
+      sizeBytes: mb * 1024 * 1024,
+      modified: DateTime(2026),
+    ),
+  );
+}
+
 void main() {
   setUpAll(() async {
     if (!const bool.fromEnvironment('UI_PREVIEWS')) return;
@@ -108,6 +145,80 @@ void main() {
   );
 
   testWidgets(
+    'large scan publishes first match and small batches before completion',
+    (tester) async {
+      final service = _StreamingLarge();
+      await tester.pumpWidget(app(LargeFilesPage(service: service)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, '开始扫描').first);
+      await tester.pump();
+      service.discover('first-live.zip', 700);
+      await tester.pump();
+      expect(find.text('first-live.zip'), findsOneWidget);
+      expect(find.textContaining('已发现 1 个大文件'), findsOneWidget);
+      expect(find.text('停止扫描'), findsOneWidget);
+      service.discover('second-live.zip', 900);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('second-live.zip'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('second-live.zip')).dy,
+        lessThan(tester.getTopLeft(find.text('first-live.zip')).dy),
+      );
+      service.discover('final-live.zip', 800);
+      await tester.pump();
+      final closed = service.controller.close();
+      await tester.pump();
+      await closed;
+      await tester.pumpAndSettle();
+      expect(find.text('final-live.zip'), findsOneWidget);
+      expect(service.saved, hasLength(3));
+      expect(find.text('停止扫描'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'stopping large scan retains pending matches and disposes its timer',
+    (tester) async {
+      final service = _StreamingLarge();
+      await tester.pumpWidget(app(LargeFilesPage(service: service)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, '开始扫描').first);
+      await tester.pump();
+      service.discover('keep-first.zip', 700);
+      await tester.pump();
+      service.discover('keep-pending.zip', 800);
+      await tester.tap(find.text('停止扫描'));
+      await tester.pump();
+      expect(service.token!.cancelled, true);
+      service.controller.close();
+      await tester.pumpAndSettle();
+      expect(find.text('keep-first.zip'), findsOneWidget);
+      expect(find.text('keep-pending.zip'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('large scan timer is cancelled when the page is removed', (
+    tester,
+  ) async {
+    final service = _StreamingLarge();
+    await tester.pumpWidget(app(LargeFilesPage(service: service)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ElevatedButton, '开始扫描').first);
+    await tester.pump();
+    service.discover('visible-before-leaving.zip', 700);
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    service.controller.close();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(service.token!.cancelled, true);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
     'disk dropdown, single view toggle and rightmost back work together',
     (tester) async {
       final service = _Disk();
@@ -126,7 +237,14 @@ void main() {
       await tester.tap(find.byTooltip('切换为列表'));
       await tester.pumpAndSettle();
       expect(find.byType(DiskTreemap), findsNothing);
-      await tester.tap(find.widgetWithText(ListTile, 'Example'));
+      await tester.tap(
+        find.widgetWithText(ListTile, 'Example'),
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('打开所在位置'), findsOneWidget);
+      expect(find.text('移动到其他目录'), findsNothing);
+      await tester.tap(find.text('进入目录'));
       await tester.pumpAndSettle();
       expect(service.opened.last, r'C:\Example');
       expect(tester.widget<IconButton>(back).onPressed, isNotNull);

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/path_utils.dart';
 import '../services/disk_services.dart';
+import 'file_actions_button.dart';
 
 class DiskMapRect {
   const DiskMapRect(this.node, this.rect);
@@ -138,45 +139,57 @@ class _Tile extends StatelessWidget {
         message:
             '${node.name}\n${formatBytes(node.sizeBytes)}\n${node.fileCount} 文件\n${node.path}',
         waitDuration: const Duration(milliseconds: 250),
-        child: Material(
-          color: color,
-          borderRadius: BorderRadius.circular(10),
-          child: InkWell(
+        child: FileActionsButton.contextMenu(
+          path: node.path,
+          allowMove: false,
+          actions: [
+            if (node.isDirectory)
+              FileMenuAction(
+                '进入目录',
+                icon: Icons.folder_open_rounded,
+                onSelected: () => onTap(node),
+              ),
+          ],
+          child: Material(
+            color: color,
             borderRadius: BorderRadius.circular(10),
-            onTap: node.isDirectory ? () => onTap(node) : null,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-              child: rect.width < 60 || rect.height < 40
-                  ? const SizedBox.shrink()
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          node.name,
-                          maxLines: rect.height >= 64 ? 2 : 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            height: 1.2,
-                          ),
-                        ),
-                        if (showSize) ...[
-                          const Spacer(),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: node.isDirectory ? () => onTap(node) : null,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                child: rect.width < 60 || rect.height < 40
+                    ? const SizedBox.shrink()
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                           Text(
-                            formatBytes(node.sizeBytes),
-                            maxLines: 1,
+                            node.name,
+                            maxLines: rect.height >= 64 ? 2 : 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.88),
-                              fontSize: 11,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
                               fontWeight: FontWeight.w600,
+                              height: 1.2,
                             ),
                           ),
+                          if (showSize) ...[
+                            const Spacer(),
+                            Text(
+                              formatBytes(node.sizeBytes),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.88),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
-                    ),
+                      ),
+              ),
             ),
           ),
         ),

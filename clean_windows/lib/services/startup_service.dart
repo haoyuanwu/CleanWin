@@ -31,6 +31,25 @@ class StartupItem {
 
   String get id => '$location|$hive|$view|$key|$valueName|$sourceFile|$disabled'
       .toLowerCase();
+
+  /// The scanner and the action handler must agree on supported targets.
+  bool get canManage {
+    if (!canToggle || !stateKnown) return false;
+    if (group == 'registry') {
+      return location == 'Registry' &&
+          {
+            r'Software\Microsoft\Windows\CurrentVersion\Run',
+            r'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+          }.contains(key) &&
+          {'CurrentUser', 'LocalMachine'}.contains(hive) &&
+          {'Registry32', 'Registry64'}.contains(view) &&
+          valueName.isNotEmpty;
+    }
+    return group == 'folder' &&
+        {'StartupFolder-User', 'StartupFolder-Common'}.contains(location) &&
+        sourceFile.isNotEmpty;
+  }
+
   String get locationLabel => detail.isNotEmpty ? detail : location;
   String get groupLabel => switch (group) {
     'registry' => '注册表',
@@ -87,7 +106,7 @@ class StartupService {
   final PowerShellRunner _run;
   final ModuleCache _cache;
   List<String> warnings = [];
-  static const _cacheKey = 'startup_sources_v3';
+  static const _cacheKey = 'startup_manageable_v4';
 
   Future<List<StartupItem>> list({bool force = false}) async {
     Map<String, dynamic>? data;
@@ -113,7 +132,10 @@ class StartupService {
         (data['Items'] as List)
             .whereType<Map>()
             .map((row) => StartupItem.fromJson(Map<String, dynamic>.from(row)))
-            .where((item) => item.name.isNotEmpty && seen.add(item.id))
+            .where(
+              (item) =>
+                  item.name.isNotEmpty && item.canManage && seen.add(item.id),
+            )
             .toList()
           ..sort(
             (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
@@ -125,26 +147,7 @@ class StartupService {
   /// Windows runs all Run value names; a .disabled suffix does not disable them.
   /// Move reviewed values to a non-executable subkey, preserving their data type.
   Future<bool> setEnabled(StartupItem item, bool enabled) async {
-    if (!item.canToggle || !item.stateKnown || item.enabled == enabled) {
-      return false;
-    }
-    if (item.group == 'registry') {
-      const keys = {
-        r'Software\Microsoft\Windows\CurrentVersion\Run',
-        r'Software\Microsoft\Windows\CurrentVersion\RunOnce',
-      };
-      if (item.location != 'Registry' ||
-          !keys.contains(item.key) ||
-          !{'CurrentUser', 'LocalMachine'}.contains(item.hive) ||
-          !{'Registry32', 'Registry64'}.contains(item.view) ||
-          item.valueName.isEmpty) {
-        return false;
-      }
-    } else if (item.group != 'folder' ||
-        !item.location.startsWith('StartupFolder-') ||
-        item.sourceFile.isEmpty) {
-      return false;
-    }
+    if (!item.canManage || item.enabled == enabled) return false;
     final payload = {...item.toJson(), 'Enable': enabled};
     final result = await _run(
       _operation(payload, remove: false),

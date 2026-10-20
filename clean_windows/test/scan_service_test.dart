@@ -60,7 +60,7 @@ void main() {
   }
 
   setUp(() {
-    fixture = Directory('.dart_tool').createTempSync('scan_test_').absolute;
+    fixture = Directory.systemTemp.createTempSync('scan_test_').absolute;
     environment = {
       'USERPROFILE': fixture.path,
       'DOWNLOADS': p.join(fixture.path, 'Downloads'),
@@ -75,7 +75,7 @@ void main() {
       'TEMP': p.join(fixture.path, 'RedirectedTemp'),
       'TMP': p.join(fixture.path, 'RedirectedTemp'),
     };
-    service = ScanService(environment: environment);
+    service = ScanService(environment: environment, driveRoots: const []);
     ProcessUtils.debugSkip = true;
   });
 

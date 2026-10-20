@@ -11,7 +11,7 @@ enum CleanCategory {
   recycleBin('回收站', '清空回收站中的文件', 'assets/icons/recycle.svg'),
   nvidiaCache('显卡缓存', 'DirectX、NVIDIA、AMD 着色器缓存', 'assets/icons/gpu.svg'),
   appLeftovers('应用残留', '安装目录中的空目录（需手动确认）', 'assets/icons/leftover.svg'),
-  downloads('下载文件夹', '下载目录中的大文件（需手动勾选）', 'assets/icons/download.svg'),
+  downloads('下载文件夹', '系统下载与软件管家的下载包（需手动勾选）', 'assets/icons/download.svg'),
   memoryDumps('内存转储', '蓝屏转储与 Minidump', 'assets/icons/dump.svg'),
   windowsUpdate('更新缓存', 'Windows Update 下载缓存', 'assets/icons/update.svg'),
   registryJunk(
@@ -37,13 +37,14 @@ enum CleanCategory {
       this == CleanCategory.windowsUpdate || this == CleanCategory.systemLogs;
 }
 
-/// Focus the overview on user caches. Personal files and maintenance tools
-/// are handled explicitly by their own pages or targeted scans.
+/// Personal downloads and recycle-bin contents are reviewed manually.
 const oneClickScanCategories = {
   CleanCategory.nvidiaCache,
   CleanCategory.systemCache,
   CleanCategory.browserCache,
   CleanCategory.appCache,
+  CleanCategory.recycleBin,
+  CleanCategory.downloads,
 };
 
 bool automaticallySelectCleanupItem(CleanCategory category, String id) =>

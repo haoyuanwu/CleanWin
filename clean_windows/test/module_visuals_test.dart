@@ -140,6 +140,10 @@ class _Startup extends StartupService {
       group: 'registry',
       enabled: true,
       canToggle: true,
+      hive: 'CurrentUser',
+      view: 'Registry64',
+      key: r'Software\Microsoft\Windows\CurrentVersion\Run',
+      valueName: 'demo1',
     ),
     StartupItem(
       name: 'Game Launcher',
@@ -148,6 +152,10 @@ class _Startup extends StartupService {
       group: 'registry',
       enabled: false,
       canToggle: true,
+      hive: 'CurrentUser',
+      view: 'Registry64',
+      key: r'Software\Microsoft\Windows\CurrentVersion\Run',
+      valueName: 'demo2',
     ),
     StartupItem(
       name: 'Store App',
@@ -245,7 +253,7 @@ void main() {
   testWidgets(
     'download type charts filter without changing hidden selections',
     (tester) async {
-      await state.scan(force: true);
+      await tester.runAsync(() => state.scan(force: true));
       await tester.pumpWidget(page(const DownloadsPage()));
       await tester.pumpAndSettle();
       expect(state.selectedDownloadIds, isEmpty);
@@ -288,13 +296,15 @@ void main() {
   );
 
   testWidgets(
-    'startup charts separate unknown state and registry filters keep groups folded',
+    'startup charts contain manageable states and registry filters keep groups folded',
     (tester) async {
       await tester.pumpWidget(page(StartupPage(service: _Startup())));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('insight-状态未知')));
+      expect(find.byKey(const ValueKey('insight-状态未知')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('insight-已禁用')));
       await tester.pumpAndSettle();
-      expect(find.text('Store App'), findsOneWidget);
+      expect(find.text('Store App'), findsNothing);
+      expect(find.text('Game Launcher'), findsOneWidget);
       expect(find.text('Microsoft OneDrive'), findsNothing);
       await tester.pumpWidget(page(const RegistryCleanPage()));
       await tester.pumpAndSettle();
@@ -369,12 +379,12 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await state.scan(force: true);
+      await tester.runAsync(() => state.scan(force: true));
       await tester.runAsync(() async {
         await state.addManualWhitelist(r'C:\Projects\Workspace');
         await state.addManualWhitelist(r'D:\Photos\Originals');
       });
-      await state.scan(force: true);
+      await tester.runAsync(() => state.scan(force: true));
       for (final width in [1000.0, 560.0]) {
         tester.view.physicalSize = Size(width, 720);
         for (final name in [

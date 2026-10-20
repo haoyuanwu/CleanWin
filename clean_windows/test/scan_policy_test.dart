@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:clean_windows/services/process_utils.dart';
+
 import 'package:clean_windows/models/clean_models.dart';
 import 'package:clean_windows/models/scan_options.dart';
 import 'package:clean_windows/services/file_operability.dart';
@@ -14,9 +16,11 @@ void main() {
   late Directory fixture;
   late Map<String, String> env;
   setUp(() {
-    fixture = Directory('.dart_tool').createTempSync('scan_policy_').absolute;
+    fixture = Directory.systemTemp.createTempSync('scan_policy_').absolute;
     env = {
       'USERPROFILE': fixture.path,
+      'DOWNLOADS': p.join(fixture.path, 'Downloads'),
+      'USER_SID': 'S-1-5-21-100',
       'LOCALAPPDATA': p.join(fixture.path, 'AppData', 'Local'),
       'APPDATA': p.join(fixture.path, 'AppData', 'Roaming'),
       'SystemRoot': p.join(fixture.path, 'Windows'),
@@ -27,7 +31,7 @@ void main() {
   });
   tearDown(() {
     expect(
-      p.isWithin(Directory('.dart_tool').absolute.path, fixture.path),
+      p.isWithin(Directory.systemTemp.absolute.path, fixture.path),
       isTrue,
     );
     fixture.deleteSync(recursive: true);
@@ -73,8 +77,11 @@ void main() {
     final visited = <String>[];
     final service = ScanService(
       environment: env,
-      powerShellRunner: (_, _) async =>
-          throw StateError('One-click must not launch PowerShell'),
+      driveRoots: const [],
+      powerShellRunner: (script, _) async =>
+          script.contains('CleanWinDownloadSettings')
+          ? PsResult(exitCode: 0, stdout: '[]', stderr: '')
+          : throw StateError('Unexpected system maintenance script'),
       operabilityProbe: (paths) async =>
           paths.where((path) => path != denied.path).toSet(),
     );
@@ -121,6 +128,8 @@ void main() {
     expect(limited.keys.toSet(), {
       CleanCategory.systemCache,
       CleanCategory.appCache,
+      CleanCategory.recycleBin,
+      CleanCategory.downloads,
     });
   });
 
@@ -168,6 +177,7 @@ void main() {
       );
       final service = ScanService(
         environment: env,
+        driveRoots: const [],
         operabilityProbe: (paths) async => paths.toSet(),
       );
       final state = AppState(

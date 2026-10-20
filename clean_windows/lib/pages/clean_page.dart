@@ -22,7 +22,6 @@ class CleanPage extends StatefulWidget {
 
 class _CleanPageState extends State<CleanPage> {
   String _categoryQuery = '';
-  bool _onlyWithResults = false;
   CleanCategory? _focusedCategory;
   final _scroll = ScrollController();
   final _resultsKey = GlobalKey();
@@ -40,7 +39,6 @@ class _CleanPageState extends State<CleanPage> {
     setState(() {
       _focusedCategory = category;
       _categoryQuery = '';
-      _onlyWithResults = false;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final target = _resultsKey.currentContext;
@@ -106,15 +104,22 @@ class _CleanPageState extends State<CleanPage> {
       0,
       (sum, item) => sum + item.sizeBytes,
     );
-    final manualCount = state.categories
-        .where((category) => !cosmicSmartCategories.contains(category.category))
-        .fold<int>(0, (sum, category) => sum + category.selectedCount);
+    final selectedBytes = state.totalSelectedBytes;
+    final selectedCount = state.totalSelectedCount;
+    final manualCount = selectedCount - smartItems.length;
+    final manualBytes = selectedBytes - smartBytes;
+    final cleanedSinceScan =
+        state.lastCleanAt != null &&
+        (state.lastScanAt == null ||
+            !state.lastCleanAt!.isBefore(state.lastScanAt!));
     final visibleCategories = state.categories
         .where(
           (category) =>
+              (!cleanedSinceScan ||
+                  category.items.isNotEmpty ||
+                  category.error != null) &&
               (_focusedCategory == null ||
                   category.category == _focusedCategory) &&
-              (!_onlyWithResults || category.items.isNotEmpty) &&
               category.category.title.toLowerCase().contains(
                 _categoryQuery.trim().toLowerCase(),
               ),
@@ -137,6 +142,14 @@ class _CleanPageState extends State<CleanPage> {
         style: TextButton.styleFrom(
           foregroundColor: CosmicColors.cyan,
           disabledForegroundColor: CosmicColors.muted,
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: base.outlinedButtonTheme.style?.copyWith(
+          foregroundColor: const WidgetStatePropertyAll(CosmicColors.cyan),
+          side: const WidgetStatePropertyAll(
+            BorderSide(color: CosmicColors.muted, width: 1.5),
+          ),
         ),
       ),
       popupMenuTheme: const PopupMenuThemeData(
@@ -224,9 +237,8 @@ class _CleanPageState extends State<CleanPage> {
                             hasResults: showResults,
                             cleanedAt: _celebrationAt,
                             onScan: _startScan,
-                            smartBytes: smartBytes,
                             onSmartClean:
-                                busy || smartItems.isEmpty || !showResults
+                                busy || selectedCount == 0 || !showResults
                                 ? null
                                 : () => _confirmClean(context),
                             onCategory: _focusCategory,
@@ -285,20 +297,6 @@ class _CleanPageState extends State<CleanPage> {
                                           () => _categoryQuery = value,
                                         ),
                                       ),
-                                      FilterChip(
-                                        label: const Text('只看有结果'),
-                                        selected: _onlyWithResults,
-                                        onSelected: (value) => setState(
-                                          () => _onlyWithResults = value,
-                                        ),
-                                      ),
-                                      const Text(
-                                        '点击分类查看文件',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: CosmicColors.muted,
-                                        ),
-                                      ),
                                     ],
                                   ),
                                 ],
@@ -306,18 +304,32 @@ class _CleanPageState extends State<CleanPage> {
                             ),
                           ),
                           if (visibleCategories.isEmpty)
-                            const SliverToBoxAdapter(
+                            SliverToBoxAdapter(
                               child: Padding(
-                                padding: EdgeInsets.all(26),
+                                padding: const EdgeInsets.all(26),
                                 child: Center(
                                   child: Text(
-                                    '没有匹配的分类',
+                                    cleanedSinceScan &&
+                                            _categoryQuery.isEmpty &&
+                                            _focusedCategory == null
+                                        ? '已选项目已处理，暂无剩余内容'
+                                        : '没有匹配的分类',
                                     style: TextStyle(color: CosmicColors.muted),
                                   ),
                                 ),
                               ),
                             ),
                           SliverList.builder(
+                            findChildIndexCallback: (key) {
+                              final index = visibleCategories.indexWhere(
+                                (category) =>
+                                    key ==
+                                    ValueKey(
+                                      '${state.scanGeneration}_${category.category.name}',
+                                    ),
+                              );
+                              return index < 0 ? null : index;
+                            },
                             itemCount: visibleCategories.length,
                             itemBuilder: (context, index) {
                               final category = visibleCategories[index];
@@ -367,7 +379,7 @@ class _CleanPageState extends State<CleanPage> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
-                                  '智能推荐 · ${smartItems.length} 项',
+                                  '已选 · $selectedCount 项',
                                   style: const TextStyle(
                                     fontSize: 11,
                                     color: CosmicColors.muted,
@@ -375,31 +387,32 @@ class _CleanPageState extends State<CleanPage> {
                                 ),
                                 const SizedBox(height: 4),
                                 AnimatedByteCount(
-                                  bytes: smartBytes,
+                                  key: const ValueKey('clean-selected-total'),
+                                  bytes: selectedBytes,
                                   style: const TextStyle(
                                     fontSize: 22,
                                     fontWeight: FontWeight.w700,
                                     color: CosmicColors.cyan,
                                   ),
                                 ),
+                                if (manualCount > 0) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '缓存 ${formatBytes(smartBytes)} · 其他所选 ${formatBytes(manualBytes)}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: CosmicColors.muted,
+                                    ),
+                                  ),
+                                ],
                               ],
                             );
                             final actions = Wrap(
                               spacing: 8,
                               runSpacing: 6,
                               children: [
-                                if (manualCount > 0)
-                                  TextButton(
-                                    onPressed: busy
-                                        ? null
-                                        : () => _confirmClean(
-                                            context,
-                                            smart: false,
-                                          ),
-                                    child: const Text('清理其他所选'),
-                                  ),
                                 ElevatedButton.icon(
-                                  onPressed: busy || smartItems.isEmpty
+                                  onPressed: busy || selectedCount == 0
                                       ? null
                                       : () => _confirmClean(context),
                                   style: ElevatedButton.styleFrom(
@@ -452,41 +465,37 @@ class _CleanPageState extends State<CleanPage> {
     );
   }
 
-  Future<void> _confirmClean(BuildContext context, {bool smart = true}) async {
+  Future<void> _confirmClean(BuildContext context) async {
     final state = context.read<AppState>();
     if (state.scanning || state.cleaning || state.scanGeneration == 0) return;
-    final categories = smart
-        ? cosmicSmartCategories
-        : CleanCategory.values
-              .where((category) => !cosmicSmartCategories.contains(category))
-              .toSet();
     final items = state.categories
-        .where((category) => categories.contains(category.category))
         .expand((category) => category.items)
         .where((item) => item.selected)
         .toList();
+    final categories = items.map((item) => item.category).toSet();
+    final requiresManualConfirmation = categories.any(
+      (category) => !cosmicSmartCategories.contains(category),
+    );
     if (items.isEmpty) return;
     final bytes = items.fold<int>(0, (sum, item) => sum + item.sizeBytes);
-    if (state.options.confirmBeforeClean) {
+    final recycledBytes = items
+        .where((item) => item.category == CleanCategory.downloads)
+        .fold<int>(0, (sum, item) => sum + item.sizeBytes);
+    if (state.options.confirmBeforeClean || requiresManualConfirmation) {
       final ok = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => Theme(
           data: _cosmicTheme ?? Theme.of(context),
-          child: AlertDialog(
-            title: Text(smart ? '智能清理' : '清理其他所选'),
-            content: Text(
-              '将清理 ${items.length} 个已勾选项目，预计释放 ${formatBytes(bytes)}。\n\n${smart ? '本次仅处理系统、浏览器、软件及显卡缓存。' : '本次包含需要手动确认的内容。'}删除后通常无法恢复。',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext, false),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext, true),
-                child: const Text('确认清理'),
-              ),
-            ],
+          child: CleanConfirmationDialog(
+            title: '智能清理',
+            count: items.length,
+            bytes: bytes,
+            recycledBytes: recycledBytes,
+            description: categories.contains(CleanCategory.recycleBin)
+                ? '勾选的已有回收站内容将永久删除；下载文件移入回收站后仍可恢复。'
+                : recycledBytes > 0
+                ? '下载文件移入回收站，可恢复；所选缓存删除后通常无法恢复。'
+                : '仅处理本次已勾选的项目；缓存删除后通常无法恢复。',
           ),
         ),
       );
@@ -504,8 +513,14 @@ class _CleanPageState extends State<CleanPage> {
           child: CleanProgressDialog(categories: categories),
         ),
       );
-      if (mounted && report?.cancelled != true && state.lastCleanAt != before) {
-        setState(() => _celebrationAt = state.lastCleanAt);
+      if (mounted && state.lastCleanAt != before) {
+        setState(() {
+          if (_focusedCategory != null &&
+              (state.results[_focusedCategory]?.items.isEmpty ?? true)) {
+            _focusedCategory = null;
+          }
+          if (report?.cancelled != true) _celebrationAt = state.lastCleanAt;
+        });
       }
     }
   }
@@ -643,37 +658,39 @@ class _CategoryCardState extends State<_CategoryCard> {
                         ),
                       ),
                       const SizedBox(height: 5),
-                      Row(
-                        children: [
-                          Icon(
-                            category.error != null
-                                ? Icons.info_outline_rounded
-                                : category.items.isEmpty
-                                ? Icons.check_circle_outline_rounded
-                                : Icons.circle,
-                            size:
-                                category.items.isEmpty || category.error != null
-                                ? 12
-                                : 6,
-                            color: color,
-                          ),
-                          const SizedBox(width: 5),
-                          Expanded(
-                            child: Text(
+                      if (category.error != null ||
+                          category.items.isEmpty ||
+                          !category.category.defaultSelected)
+                        Row(
+                          children: [
+                            Icon(
                               category.error != null
-                                  ? '部分位置未读取，展开查看'
+                                  ? Icons.info_outline_rounded
                                   : category.items.isEmpty
-                                  ? '已检查，未发现可清理内容'
-                                  : !category.category.defaultSelected
-                                  ? '需手动确认'
-                                  : '已就绪，可展开预览',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(fontSize: 10, color: color),
+                                  ? Icons.check_circle_outline_rounded
+                                  : Icons.circle,
+                              size:
+                                  category.items.isEmpty ||
+                                      category.error != null
+                                  ? 12
+                                  : 6,
+                              color: color,
                             ),
-                          ),
-                        ],
-                      ),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                category.error != null
+                                    ? '部分位置未读取'
+                                    : category.items.isEmpty
+                                    ? '已检查，未发现可清理内容'
+                                    : '需手动确认',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 10, color: color),
+                              ),
+                            ),
+                          ],
+                        ),
                     ],
                   ),
                 ),
@@ -820,10 +837,11 @@ class _CategoryCardState extends State<_CategoryCard> {
           value: 'copy',
           child: _MenuRow(icon: Icons.copy_rounded, label: '复制路径'),
         ),
-        const PopupMenuItem(
-          value: 'reveal',
-          child: _MenuRow(icon: Icons.folder_open_rounded, label: '在资源管理器中打开'),
-        ),
+        if (item.category != CleanCategory.registryJunk)
+          const PopupMenuItem(
+            value: 'reveal',
+            child: _MenuRow(icon: Icons.folder_open_rounded, label: '打开所在位置'),
+          ),
         const PopupMenuDivider(),
         PopupMenuItem(
           value: 'toggle',
@@ -859,7 +877,15 @@ class _CategoryCardState extends State<_CategoryCard> {
               .showSnackBar(const SnackBar(content: Text('路径已复制到剪贴板')));
         }
       case 'reveal':
-        await state.revealInExplorer(item.path);
+        try {
+          await state.revealInExplorer(item.path);
+        } on Exception {
+          if (context.mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('无法打开所在位置，请检查路径和权限')));
+          }
+        }
       case 'toggle':
         state.toggleItem(item);
     }
