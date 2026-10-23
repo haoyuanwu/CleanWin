@@ -280,10 +280,11 @@ class _ModuleSelectState<T> extends State<ModuleSelect<T>> {
         ),
         color: theme.colorScheme.surface,
         surfaceTintColor: Colors.transparent,
-        elevation: 8,
+        elevation: 6,
+        shadowColor: AppColors.sidebar.withValues(alpha: .16),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: BorderSide(color: theme.colorScheme.outlineVariant, width: 1.6),
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: theme.colorScheme.outlineVariant, width: 1.2),
         ),
         onOpened: () => setState(() => _open = true),
         onCanceled: () => setState(() => _open = false),
@@ -352,14 +353,17 @@ class _ModuleSelectState<T> extends State<ModuleSelect<T>> {
                         accent.withValues(alpha: .06),
                         theme.colorScheme.surface,
                       )
-                    : theme.colorScheme.surface,
+                    : Color.alphaBlend(
+                        accent.withValues(alpha: .055),
+                        theme.colorScheme.surface,
+                      ),
                 border: Border.all(
-                  width: _open ? 2 : 1.6,
+                  width: 1.2,
                   color: _open || (_hovered && enabled)
                       ? accent.withValues(alpha: .6)
-                      : theme.colorScheme.outlineVariant,
+                      : Colors.transparent,
                 ),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -526,6 +530,82 @@ class ListHeaderCell extends StatelessWidget {
   }
 }
 
+/// 可点击排序的表头单元格：点击切换排序字段/方向，并显示箭头
+class SortableHeaderCell extends StatelessWidget {
+  const SortableHeaderCell({
+    super.key,
+    required this.label,
+    required this.active,
+    required this.ascending,
+    required this.onTap,
+    this.width,
+    this.flex,
+    this.tooltip,
+  });
+
+  final String label;
+  final bool active;
+  final bool ascending;
+  final VoidCallback onTap;
+  final double? width;
+  final int? flex;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final child = Semantics(
+      button: true,
+      selected: active,
+      label: tooltip ?? label,
+      child: Tooltip(
+        message: tooltip ?? (active ? '再次点击切换顺序' : '点击按$label排序'),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: active
+                          ? AppColors.primary
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  active
+                      ? (ascending
+                            ? Icons.keyboard_arrow_up_rounded
+                            : Icons.keyboard_arrow_down_rounded)
+                      : Icons.unfold_more_rounded,
+                  size: 16,
+                  color: active
+                      ? AppColors.primary
+                      : AppColors.textTertiary.withValues(alpha: 0.85),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (width != null) return SizedBox(width: width, child: child);
+    if (flex != null) return Expanded(flex: flex!, child: child);
+    return Expanded(child: child);
+  }
+}
+
 /// 状态胶囊
 class StatusChip extends StatelessWidget {
   const StatusChip({
@@ -558,12 +638,69 @@ class StatusChip extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
               color: color,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Desktop feedback without owning taps or changing row geometry.
+class InteractiveSurface extends StatefulWidget {
+  const InteractiveSurface({
+    super.key,
+    required this.child,
+    this.selected = false,
+    this.enabled = true,
+    this.baseColor = Colors.transparent,
+  });
+  final Widget child;
+  final bool selected;
+  final bool enabled;
+  final Color baseColor;
+  @override
+  State<InteractiveSurface> createState() => _InteractiveSurfaceState();
+}
+
+class _InteractiveSurfaceState extends State<InteractiveSurface> {
+  bool _hovered = false;
+  bool _focused = false;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final active = widget.enabled && (_hovered || _focused);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Focus(
+        canRequestFocus: false,
+        onFocusChange: (value) => setState(() => _focused = value),
+        child: AnimatedContainer(
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 140),
+          curve: Curves.easeOutCubic,
+          decoration: BoxDecoration(
+            color: widget.selected
+                ? scheme.primaryContainer
+                : active
+                ? scheme.primary.withValues(alpha: .055)
+                : widget.baseColor,
+            border: Border(
+              left: BorderSide(
+                width: 3,
+                color: widget.selected || _focused
+                    ? scheme.primary
+                    : Colors.transparent,
+              ),
+            ),
+          ),
+          child: Material(type: MaterialType.transparency, child: widget.child),
+        ),
       ),
     );
   }

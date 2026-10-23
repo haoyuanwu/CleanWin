@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
 import '../models/installed_app.dart';
 import 'module_cache.dart';
+import 'path_utils.dart';
 import 'process_utils.dart';
 
 /// 软件卸载服务：读注册表列表 + 执行卸载
@@ -12,6 +14,7 @@ class UninstallService {
   final PowerShellRunner _runner;
   final ModuleCache _cache;
   static const _cacheKey = 'installed_v2';
+  static const _sizeCacheKey = 'size_estimates_v1';
   static const _psList = r'''
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -84,6 +87,7 @@ ConvertTo-Json -InputObject @($apps | Sort-Object DisplayName) -Depth 4 -Compres
           a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
     );
 
+    _restoreMeasuredSizes(apps);
     _cache.set(
       _cacheKey,
       apps
@@ -104,6 +108,66 @@ ConvertTo-Json -InputObject @($apps | Sort-Object DisplayName) -Depth 4 -Compres
           .toList(),
     );
     return apps;
+  }
+
+  void _restoreMeasuredSizes(List<InstalledApp> apps) {
+    final cached = _cache.getMap(_sizeCacheKey);
+    if (cached == null) return;
+    for (final app in apps) {
+      if (app.hasRegistrySize) continue;
+      final bytes = cached[app.identity];
+      if (bytes is num && bytes > 0) {
+        app.measuredSizeBytes = bytes.toInt();
+      }
+    }
+  }
+
+  /// 为未报告 EstimatedSize 的软件测量安装目录大小。
+  /// [onUpdated] 每完成一项回调一次，便于界面渐进刷新。
+  Future<void> fillMissingSizes(
+    List<InstalledApp> apps, {
+    void Function(InstalledApp app)? onUpdated,
+  }) async {
+    final pending = <InstalledApp>[];
+    final sizes = Map<String, dynamic>.from(_cache.getMap(_sizeCacheKey) ?? {});
+    var dirty = false;
+    for (final app in apps) {
+      if (app.hasRegistrySize) continue;
+      if ((app.measuredSizeBytes ?? 0) > 0) {
+        sizes[app.identity] = app.measuredSizeBytes;
+        dirty = true;
+        continue;
+      }
+      final cached = sizes[app.identity];
+      if (cached is num && cached > 0) {
+        app.measuredSizeBytes = cached.toInt();
+        onUpdated?.call(app);
+        continue;
+      }
+      pending.add(app);
+    }
+    if (dirty) _cache.set(_sizeCacheKey, sizes);
+
+    for (final app in pending) {
+      final root = resolveInstallRoot(
+        installLocation: app.installLocation,
+        uninstallString: app.uninstallString,
+        quietUninstallString: app.quietUninstallString,
+        displayIcon: app.displayIcon,
+      );
+      if (root == null || !Directory(root).existsSync()) continue;
+      try {
+        final bytes = await measureDirectoryBytes(root);
+        if (bytes > 0) {
+          app.measuredSizeBytes = bytes;
+          sizes[app.identity] = bytes;
+          _cache.set(_sizeCacheKey, sizes);
+          onUpdated?.call(app);
+        }
+      } on Exception catch (_) {
+        // 测量失败保持未知大小，不阻断列表
+      }
+    }
   }
 
   /// Launch the normal wizard; success requires checking the exact install record.

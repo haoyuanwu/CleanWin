@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -44,6 +45,46 @@ void main() {
       expect(service.isWhitelisted(r'C:\Protected\data'), isTrue);
       expect(service.lastError, isNotNull);
       expect(WhitelistService(storageDirectory: fixture.path).length, 1);
+    },
+  );
+  test(
+    'whitelist writes yield to UI work and serialize rapid changes',
+    () async {
+      final entered = [Completer<void>(), Completer<void>()];
+      final release = [Completer<void>(), Completer<void>()];
+      var call = 0;
+      final service = WhitelistService(
+        storageDirectory: fixture.path,
+        writeSnapshot: (file, data) async {
+          final index = call++;
+          entered[index].complete();
+          await release[index].future;
+          await file.writeAsString(data, flush: true);
+        },
+      );
+
+      final first = service.add(r'C:\First');
+      final second = service.add(r'C:\Second');
+      await entered.first.future;
+      var uiTicked = false;
+      Timer.run(() => uiTicked = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(uiTicked, isTrue);
+      expect(
+        call,
+        1,
+        reason: 'a second snapshot must wait for the first commit',
+      );
+
+      release.first.complete();
+      await first;
+      await entered.last.future;
+      release.last.complete();
+      await second;
+
+      expect(service.isWhitelisted(r'C:\First\child.tmp'), isTrue);
+      expect(service.isWhitelisted(r'C:\Second\child.tmp'), isTrue);
+      expect(WhitelistService(storageDirectory: fixture.path).length, 2);
     },
   );
   test('unreadable whitelist blocks cleanup without modifying files', () async {
@@ -176,7 +217,8 @@ void main() {
         ..writeAsStringSync(jsonEncode(scripts));
       final scriptPath = input.path.replaceAll("'", "''");
       final check =
-          "\$scripts=Get-Content -LiteralPath '$scriptPath' -Raw -Encoding UTF8 | ConvertFrom-Json\n" r'''
+          "\$scripts=Get-Content -LiteralPath '$scriptPath' -Raw -Encoding UTF8 | ConvertFrom-Json\n"
+          r'''
 foreach($script in $scripts) {
   $tokens=$null; $errors=$null
   [void][Management.Automation.Language.Parser]::ParseInput($script,[ref]$tokens,[ref]$errors)

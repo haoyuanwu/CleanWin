@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:clean_windows/models/clean_models.dart';
 import 'package:clean_windows/pages/clean_page.dart';
@@ -10,6 +11,7 @@ import 'package:clean_windows/services/scan_service.dart';
 import 'package:clean_windows/state/app_state.dart';
 import 'package:clean_windows/theme/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -38,10 +40,16 @@ class _Scan extends ScanService {
     return records;
   }
 
-  void completeCategory(CleanCategory category) {
+  void completeCategory(
+    CleanCategory category, {
+    String? error,
+    int blockedFileCount = 0,
+  }) {
     final result = ScanCategory(
       category: category,
       scanDuration: Duration.zero,
+      error: error,
+      blockedFileCount: blockedFileCount,
       items: [
         CleanItem(
           id: category.name,
@@ -120,6 +128,21 @@ class _TestCache extends ModuleCache {
 }
 
 void main() {
+  setUpAll(() async {
+    if (!const bool.fromEnvironment('UI_PREVIEWS')) return;
+    await (FontLoader('Segoe UI')..addFont(
+          Future.value(
+            ByteData.sublistView(
+              File(r'C:\Windows\Fonts\msyh.ttc').readAsBytesSync(),
+            ),
+          ),
+        ))
+        .load();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+  });
+
   late Directory fixture;
   late _Scan scan;
   late _State state;
@@ -152,16 +175,17 @@ void main() {
           null,
         );
   });
-  Widget app({bool reduced = false}) => ChangeNotifierProvider<AppState>.value(
-    value: state,
-    child: MaterialApp(
-      theme: AppTheme.light(),
-      home: MediaQuery(
-        data: MediaQueryData(disableAnimations: reduced),
-        child: const Scaffold(body: CleanPage()),
-      ),
-    ),
-  );
+  Widget app({bool reduced = false, ValueChanged<int>? onNavigate}) =>
+      ChangeNotifierProvider<AppState>.value(
+        value: state,
+        child: MaterialApp(
+          theme: AppTheme.light(),
+          home: MediaQuery(
+            data: MediaQueryData(disableAnimations: reduced),
+            child: Scaffold(body: CleanPage(onNavigate: onNavigate)),
+          ),
+        ),
+      );
 
   testWidgets('idle shows disk overview without any result controls', (
     tester,
@@ -226,6 +250,119 @@ void main() {
     },
   );
 
+  testWidgets('overview excludes downloads without changing their selections', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final task = state.scan(force: true);
+    scan.completeCategory(CleanCategory.downloads);
+    scan.completeCategory(CleanCategory.systemLogs);
+    scan.completeCategory(CleanCategory.appCache);
+    scan.gate.complete();
+    await tester.pump();
+    await task;
+    state.toggleItem(state.results[CleanCategory.downloads]!.items.single);
+    final selectedBefore = state.totalSelectedBytes;
+    int? destination;
+    await tester.pumpWidget(
+      app(reduced: true, onNavigate: (index) => destination = index),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看结果'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('缓存与临时文件')).dy,
+      lessThan(tester.getTopLeft(find.text('日志与痕迹')).dy),
+    );
+    expect(find.text('下载文件夹'), findsNothing);
+    expect(find.text('管理下载'), findsNothing);
+    expect(find.text('Private cache snapshot'), findsNothing);
+    expect(destination, isNull);
+    expect(state.totalSelectedBytes, selectedBefore);
+    expect(
+      state.results[CleanCategory.downloads]!.items.single.selected,
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final width in [1000.0, 560.0]) {
+    testWidgets(
+      'cleanup-only exclusions stay readable and diagnostics copy at $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        String? copied;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied = (call.arguments as Map)['text'] as String?;
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        const message = '已统计但未加入清理：1 个候选文件\n正在占用（Windows 32）：C:\\Cache\\busy';
+        final task = state.scan(force: true);
+        scan.completeCategory(
+          CleanCategory.appCache,
+          error: message,
+          blockedFileCount: 1,
+        );
+        scan.gate.complete();
+        await tester.pump();
+        await task;
+        final boundaryKey = GlobalKey();
+        await tester.pumpWidget(
+          RepaintBoundary(key: boundaryKey, child: app(reduced: true)),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('查看结果'));
+        await tester.pumpAndSettle();
+        expect(find.text('1 个文件暂不可清理'), findsOneWidget);
+        expect(find.text('部分位置未读取'), findsNothing);
+        await tester.tap(find.text('软件缓存'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byTooltip('复制扫描诊断'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('复制扫描诊断'));
+        await tester.pump();
+        expect(copied, message);
+        expect(tester.takeException(), isNull);
+        if (const bool.fromEnvironment('UI_PREVIEWS')) {
+          await tester.runAsync(() async {
+            final boundary =
+                boundaryKey.currentContext!.findRenderObject()
+                    as RenderRepaintBoundary;
+            final screenshot = await boundary.toImage();
+            final bytes = await screenshot.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final file = File(
+              '.dart_tool/access_previews/scan-diagnostic-${width.toInt()}.png',
+            );
+            file.parent.createSync(recursive: true);
+            file.writeAsBytesSync(bytes!.buffer.asUint8List());
+            screenshot.dispose();
+          });
+        }
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
   testWidgets('restored cache is hidden until this session scans', (
     tester,
   ) async {
@@ -275,7 +412,7 @@ void main() {
   });
 
   testWidgets(
-    'cleanup includes selected downloads, preserves unchecked categories and refreshes home',
+    'overview cleanup excludes selected downloads and preserves other workspaces',
     (tester) async {
       tester.view.physicalSize = const Size(1280, 900);
       tester.view.devicePixelRatio = 1;
@@ -309,9 +446,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(cleaner.received.map((item) => item.category), [
         CleanCategory.systemCache,
-        CleanCategory.downloads,
       ]);
-      expect(state.results[CleanCategory.downloads]!.items, isEmpty);
+      expect(state.results[CleanCategory.downloads]!.items, hasLength(1));
       expect(state.results[CleanCategory.browserCache]!.items, hasLength(1));
       expect(state.results[CleanCategory.systemCache]!.items, isEmpty);
       await tester.tap(find.text('完成'));
@@ -327,66 +463,20 @@ void main() {
     },
   );
 
-  testWidgets(
-    'downloads alone enable cleanup and always require confirmation',
-    (tester) async {
-      tester.view.physicalSize = const Size(1280, 900);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      state.dispose();
-      final cleaner = _CaptureCleaner();
-      state = _State(
-        scan,
-        _TestCache(fixture.path),
-        preferences,
-        cleaner: cleaner,
-      );
-      final task = state.scan(force: true);
-      scan.completeCategory(CleanCategory.downloads);
-      scan.gate.complete();
-      await tester.pump();
-      await task;
-      state.toggleDownloadSelection(CleanCategory.downloads.name);
-      await tester.runAsync(
-        () => state.updateOptions(
-          state.options.copyWith(confirmBeforeClean: false),
-        ),
-      );
-      await tester.pumpWidget(app());
-      await tester.pumpAndSettle();
-      final button = find.widgetWithText(ElevatedButton, '智能清理');
-      expect(tester.widget<ElevatedButton>(button).onPressed, isNotNull);
-      await tester.tap(button);
-      await tester.pumpAndSettle();
-      expect(find.text('确认清理'), findsOneWidget);
-      expect(find.textContaining('下载文件移入回收站'), findsWidgets);
-      expect(cleaner.received, isEmpty);
-      await tester.tap(find.text('取消'));
-      await tester.pumpAndSettle();
-      expect(cleaner.received, isEmpty);
-      await tester.tap(button);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('确认清理'));
-      await tester.pumpAndSettle();
-      expect(cleaner.received.single.category, CleanCategory.downloads);
-      expect(state.results[CleanCategory.downloads]!.items, isEmpty);
-      expect(state.selectedDownloadIds, isEmpty);
-      expect(find.text('清理成功'), findsOneWidget);
-      expect(find.text('已移入回收站'), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byKey(const ValueKey('cleanup-result')),
-          matching: find.text('0 B'),
-        ),
-        findsNothing,
-      );
-      await tester.tap(find.text('完成'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+  testWidgets('downloads alone never enable overview cleanup', (tester) async {
+    final task = state.scan(force: true);
+    scan.completeCategory(CleanCategory.downloads);
+    scan.gate.complete();
+    await tester.pump();
+    await task;
+    state.toggleDownloadSelection(CleanCategory.downloads.name);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('智能清理'), findsNothing);
+    expect(find.text('扫描结果'), findsNothing);
+    expect(state.results[CleanCategory.downloads]!.selectedCount, 1);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'home publishes cleared results before cache save and resets after a new scan',

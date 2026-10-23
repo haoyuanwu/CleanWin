@@ -3,11 +3,16 @@ import 'dart:convert';
 import 'module_cache.dart';
 import 'process_utils.dart';
 import 'registry_audit_script.dart';
+import 'registry_target_script.dart';
 
 const registryCategoryLabels = {
   'startup': '启动命令',
   'appPaths': '程序路径',
   'mui': 'MUI 缓存',
+  'fonts': '字体记录',
+  'sharedDll': '共享库引用',
+  'applications': '打开方式',
+  'contextMenu': '右键命令',
 };
 
 class RegistryIssue {
@@ -86,7 +91,7 @@ class RegistryCoverage {
   String get statusLabel => switch (status) {
     'ok' => '已检查',
     'missing' => '位置不存在',
-    _ => '部分未读取',
+    _ => '部分未核对',
   };
 }
 
@@ -98,7 +103,7 @@ class RegistryScanService {
   final ModuleCache _cache;
   List<RegistryCoverage> coverage = [];
   List<String> warnings = [];
-  static const _cacheKey = 'registry_cleanable_v4';
+  static const _cacheKey = 'registry_cleanable_v5';
 
   Future<bool> restoreValue(RegistryIssue issue) async {
     if (!issue.canDelete) return false;
@@ -116,7 +121,9 @@ try {
   $key=$base.CreateSubKey([string]$snapshot.KeyPath,$true)
   if ($key.GetValueNames() -contains [string]$snapshot.ValueName) { throw '值已存在，禁止覆盖' }
   $kind=[Microsoft.Win32.RegistryValueKind]::$($snapshot.ValueKind)
-  $key.SetValue([string]$snapshot.ValueName,[string]$snapshot.Data,$kind)
+  $value=$snapshot.Data
+  if($snapshot.ValueKind -eq 'DWord'){$value=[int]$snapshot.Data}else{$value=[string]$snapshot.Data}
+  $key.SetValue([string]$snapshot.ValueName,$value,$kind)
   $key.Flush()
 } catch { Write-Error $_;exit 1 }
 finally {if($key){$key.Dispose()};if($base){$base.Dispose()}}
@@ -169,15 +176,45 @@ finally {if($key){$key.Dispose()};if($base){$base.Dispose()}}
     if (!{'HKCU', 'HKLM'}.contains(issue.hive) ||
         !{'Registry64', 'Registry32'}.contains(issue.view) ||
         issue.valueName == null ||
-        issue.data is! String ||
-        !{'String', 'ExpandString'}.contains(issue.valueKind) ||
+        (issue.category == 'sharedDll'
+            ? issue.data != 0 || issue.valueKind != 'DWord'
+            : issue.data is! String ||
+                  !{'String', 'ExpandString'}.contains(issue.valueKind)) ||
         !RegExp(
-          r'^[A-Za-z]:\\.+\.(exe|com|bat|cmd|ps1|vbs|js)$',
+          r'^[A-Za-z]:\\.+\.(exe|com|bat|cmd|ps1|vbs|js|dll|ocx|ttf|otf|ttc|fon)$',
           caseSensitive: false,
         ).hasMatch(issue.target)) {
       return false;
     }
     final path = issue.keyPath.toLowerCase();
+    final target = issue.target.toLowerCase();
+    if (issue.category == 'fonts') {
+      return issue.valueName!.isNotEmpty &&
+          path == r'software\microsoft\windows nt\currentversion\fonts' &&
+          RegExp(r'\.(ttf|otf|ttc|fon)$').hasMatch(target);
+    }
+    if (issue.category == 'sharedDll') {
+      return issue.hive == 'HKLM' &&
+          path == r'software\microsoft\windows\currentversion\shareddlls' &&
+          issue.valueName!.toLowerCase() == target &&
+          RegExp(r'\.(dll|ocx)$').hasMatch(target);
+    }
+    if (!RegExp(r'\.(exe|com|bat|cmd|ps1|vbs|js)$').hasMatch(target)) {
+      return false;
+    }
+    if (issue.category == 'applications') {
+      return issue.valueName == '' &&
+          RegExp(
+            r'^software\\classes\\applications\\[^\\]+\.exe\\shell\\open\\command$',
+          ).hasMatch(path);
+    }
+    if (issue.category == 'contextMenu') {
+      return issue.valueName == '' &&
+          RegExp(
+            r'^software\\classes\\(?:\*|allfilesystemobjects|directory|directory\\background|drive|folder)\\shell\\[^\\]+\\command$',
+          ).hasMatch(path);
+    }
+
     if (issue.category == 'startup') {
       return issue.valueName!.isNotEmpty &&
           {
@@ -211,7 +248,7 @@ finally {if($key){$key.Dispose()};if($base){$base.Dispose()}}
     if (!issue.canDelete) return false;
     final encoded = base64Encode(utf8.encode(jsonEncode(issue.toJson())));
     final script =
-        "\$snapshot=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded')) | ConvertFrom-Json\n"
+        "\$snapshot=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded')) | ConvertFrom-Json\n$registryTargetScript"
         r'''
 $ErrorActionPreference='Stop'
 $base=$null; $key=$null
@@ -223,16 +260,21 @@ try {
   $kind=$key.GetValueKind([string]$snapshot.ValueName)
   if ($kind.ToString() -ne [string]$snapshot.ValueKind) {exit 1}
   $raw=$key.GetValue([string]$snapshot.ValueName,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-  if ($raw -isnot [string] -or $raw -cne [string]$snapshot.Data) {exit 1}
+  if($snapshot.Category -eq 'sharedDll') {
+    if($raw -isnot [int] -or $raw -ne 0 -or $raw -ne $snapshot.Data){exit 1}
+  } elseif ($raw -isnot [string] -or $raw -cne [string]$snapshot.Data) {exit 1}
   $target=[string]$snapshot.Target
-  if ($snapshot.Category -eq 'appPaths') {
-    if ([Environment]::ExpandEnvironmentVariables($raw).Trim().Trim('"') -ine $target) {exit 1}
-  } elseif ($snapshot.Category -eq 'startup') {
-    $command=[Environment]::ExpandEnvironmentVariables($raw).Trim()
-    $current=''
-    if ($command -match '^"([^"]+)"') {$current=$Matches[1]}
-    elseif ($command -match '^([A-Za-z]:\\.*?\.(?:exe|com|bat|cmd|ps1|vbs|js))(?=\s|$)') {$current=$Matches[1]}
-    if ($current -ine $target) {exit 1}
+  $current=Resolve-CleanupTarget ([string]$snapshot.Category) ([string]$raw) ([string]$snapshot.ValueName)
+  if($current -ine $target -or !(Test-CleanupExtension ([string]$snapshot.Category) $target)){exit 1}
+  if($snapshot.Category -eq 'fonts' -and !(Test-FontAlternateMissing ([string]$raw))){exit 1}
+  if($snapshot.Category -in @('applications','contextMenu')) {
+    if($key.GetValueNames() -contains 'DelegateExecute'){exit 1}
+    $parent=$null
+    try {
+      $parentPath=([string]$snapshot.KeyPath).Substring(0,([string]$snapshot.KeyPath).LastIndexOf('\'))
+      $parent=$base.OpenSubKey($parentPath)
+      if($parent -and $parent.GetValueNames() -contains 'DelegateExecute'){exit 1}
+    } finally {if($parent){$parent.Dispose()}}
   }
   [void](Get-Item -LiteralPath ([IO.Path]::GetPathRoot($target)) -Force -ErrorAction Stop)
   try { [void](Get-Item -LiteralPath $target -Force -ErrorAction Stop); exit 1 }

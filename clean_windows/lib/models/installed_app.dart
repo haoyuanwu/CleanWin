@@ -27,7 +27,23 @@ class InstalledApp {
   /// 本地缓存的 PNG 图标路径（运行时填充）
   String? iconPath;
 
-  int get estimatedSizeBytes => (estimatedSizeKb ?? 0) * 1024;
+  /// 安装目录实测大小（字节，运行时填充）；注册表未报告时使用
+  int? measuredSizeBytes;
+
+  /// 注册表是否直接报告了有效大小
+  bool get hasRegistrySize => (estimatedSizeKb ?? 0) > 0;
+
+  /// 对外展示/排序使用的大小（字节）：优先注册表，其次实测
+  int get estimatedSizeBytes {
+    if (hasRegistrySize) return estimatedSizeKb! * 1024;
+    return measuredSizeBytes ?? 0;
+  }
+
+  /// 当前大小是否只是安装目录估算
+  bool get sizeIsMeasured => !hasRegistrySize && (measuredSizeBytes ?? 0) > 0;
+
+  bool get hasSize => estimatedSizeBytes > 0;
+
   String get identity =>
       (registryKey?.isNotEmpty == true
               ? registryKey!

@@ -14,7 +14,7 @@ import '../widgets/page_shell.dart';
 import '../widgets/module_insights.dart';
 import '../services/activity_service.dart';
 import '../models/clean_models.dart';
-import '../widgets/activity_center.dart';
+import '../widgets/registry_backups_dialog.dart';
 
 /// 开机启动项管理
 class StartupPage extends StatefulWidget {
@@ -232,66 +232,69 @@ class _StartupPageState extends State<StartupPage> {
                                 onSelected: () => _remove(item),
                               ),
                           ],
-                          child: ListTile(
-                            key: ValueKey(item.id),
-                            onTap: () => _showDetails(
-                              item.name,
-                              '来源：${item.groupLabel}\n${item.locationLabel}\n\n命令：${item.command}\n\n${item.publisher ?? ''}\n修改将在下次启动或登录时生效。',
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 6,
-                            ),
-                            leading: Icon(
-                              switch (item.group) {
-                                'task' => Icons.task_outlined,
-                                'service' => Icons.settings_suggest_outlined,
-                                'folder' => Icons.folder_outlined,
-                                'package' => Icons.apps_rounded,
-                                'system' => Icons.shield_outlined,
-                                _ => Icons.rocket_launch_outlined,
-                              },
-                              color: item.enabled
-                                  ? AppColors.primary
-                                  : AppColors.textTertiary,
-                            ),
-                            title: Text(
-                              item.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Tooltip(
-                              message: item.command,
-                              child: Text(
-                                '${item.groupLabel} · ${item.shortCommand}',
+                          child: InteractiveSurface(
+                            enabled: !_busy && !_loading,
+                            child: ListTile(
+                              key: ValueKey(item.id),
+                              onTap: () => _showDetails(
+                                item.name,
+                                '来源：${item.groupLabel}\n${item.locationLabel}\n\n命令：${item.command}\n\n${item.publisher ?? ''}\n修改将在下次启动或登录时生效。',
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 6,
+                              ),
+                              leading: Icon(
+                                switch (item.group) {
+                                  'task' => Icons.task_outlined,
+                                  'service' => Icons.settings_suggest_outlined,
+                                  'folder' => Icons.folder_outlined,
+                                  'package' => Icons.apps_rounded,
+                                  'system' => Icons.shield_outlined,
+                                  _ => Icons.rocket_launch_outlined,
+                                },
+                                color: item.enabled
+                                    ? AppColors.primary
+                                    : AppColors.textTertiary,
+                              ),
+                              title: Text(
+                                item.name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Tooltip(
-                                  message: item.enabled ? '禁用启动项' : '启用启动项',
-                                  child: Switch(
-                                    value: item.enabled,
-                                    onChanged: _busy || _loading
-                                        ? null
-                                        : (value) => _toggle(item, value),
-                                  ),
+                              subtitle: Tooltip(
+                                message: item.command,
+                                child: Text(
+                                  '${item.groupLabel} · ${item.shortCommand}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                if (item.location.startsWith('StartupFolder'))
-                                  IconButton(
-                                    tooltip: '删除启动项',
-                                    onPressed: _busy || _loading
-                                        ? null
-                                        : () => _remove(item),
-                                    icon: const Icon(
-                                      Icons.delete_outline_rounded,
-                                      color: AppColors.danger,
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Tooltip(
+                                    message: item.enabled ? '禁用启动项' : '启用启动项',
+                                    child: Switch(
+                                      value: item.enabled,
+                                      onChanged: _busy || _loading
+                                          ? null
+                                          : (value) => _toggle(item, value),
                                     ),
                                   ),
-                              ],
+                                  if (item.location.startsWith('StartupFolder'))
+                                    IconButton(
+                                      tooltip: '删除启动项',
+                                      onPressed: _busy || _loading
+                                          ? null
+                                          : () => _remove(item),
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        color: AppColors.danger,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         );
@@ -384,7 +387,7 @@ class _StartupPageState extends State<StartupPage> {
   }
 }
 
-/// 注册表瘦身（预览为主）
+/// 可验证的失效注册表值，逐项备份与恢复。
 class RegistryCleanPage extends StatefulWidget {
   const RegistryCleanPage({super.key});
 
@@ -504,7 +507,6 @@ class _RegistryCleanPageState extends State<RegistryCleanPage> {
     final entries = groups.entries.toList();
     return ModulePageShell(
       title: '注册表',
-      subtitle: '${cleanable.length} 项可清理 · 已选 ${_selected.length} 项',
       toolbar: Toolbar(
         children: [
           ModuleSearchField(
@@ -532,9 +534,7 @@ class _RegistryCleanPageState extends State<RegistryCleanPage> {
             ),
           IconButton(
             tooltip: '备份恢复',
-            onPressed: _cleaning
-                ? null
-                : () => showActivityCenter(context, tab: 2),
+            onPressed: _cleaning ? null : () => showRegistryBackups(context),
             icon: const Icon(Icons.restore_rounded, size: 19),
           ),
           if (_selected.isNotEmpty)
@@ -555,52 +555,48 @@ class _RegistryCleanPageState extends State<RegistryCleanPage> {
       banner: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          ModuleInsights(
-            label: '可清理记录',
-            value: '${cleanable.length} 项',
-            hint: '按类别查看 · 列表默认折叠 · 清理前备份',
-            busy: scanning,
-            icon: Icons.account_tree_outlined,
-            segments: [
-              for (var i = 0; i < registryCategoryLabels.length; i++)
-                if (cleanable.any(
-                  (issue) =>
-                      issue.category ==
-                      registryCategoryLabels.keys.elementAt(i),
-                ))
-                  InsightSegment(
-                    label: registryCategoryLabels.values.elementAt(i),
-                    amount: cleanable
-                        .where(
-                          (issue) =>
-                              issue.category ==
-                              registryCategoryLabels.keys.elementAt(i),
-                        )
-                        .length
-                        .toDouble(),
-                    value:
-                        '${cleanable.where((issue) => issue.category == registryCategoryLabels.keys.elementAt(i)).length}',
-                    color: insightColors[i % insightColors.length],
-                    selected:
-                        _categoryFilter ==
-                        registryCategoryLabels.keys.elementAt(i),
-                    onTap: () => setState(() {
-                      final category = registryCategoryLabels.keys.elementAt(i);
-                      _categoryFilter = _categoryFilter == category
-                          ? null
-                          : category;
-                    }),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text(
+                  state.registryCoverage.isEmpty
+                      ? '7 类失效检查'
+                      : '${cleanable.length} 项失效记录',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              for (final group in registryCategoryLabels.entries)
+                if (cleanable.any((issue) => issue.category == group.key))
+                  FilterChip(
+                    key: ValueKey('insight-${group.value}'),
+                    label: Text(
+                      '${group.value} ${cleanable.where((issue) => issue.category == group.key).length}',
+                    ),
+                    selected: _categoryFilter == group.key,
+                    onSelected: scanning
+                        ? null
+                        : (_) => setState(
+                            () => _categoryFilter = _categoryFilter == group.key
+                                ? null
+                                : group.key,
+                          ),
                   ),
               if (_categoryFilter != null)
-                InsightSegment(
-                  label: '全部类别',
-                  amount: 0,
-                  value: '重置',
-                  color: AppColors.textSecondary,
-                  onTap: () => setState(() => _categoryFilter = null),
+                TextButton(
+                  onPressed: () => setState(() => _categoryFilter = null),
+                  child: const Text('全部'),
                 ),
             ],
           ),
+          if (scanning)
+            const Padding(
+              padding: EdgeInsets.only(top: 12),
+              child: LinearProgressIndicator(),
+            ),
           if (_operationError != null)
             GlassBanner(
               icon: Icons.error_outline_rounded,
@@ -613,7 +609,7 @@ class _RegistryCleanPageState extends State<RegistryCleanPage> {
               child: TextButton.icon(
                 onPressed: _showCoverage,
                 icon: const Icon(Icons.info_outline_rounded, size: 16),
-                label: Text('${state.registryWarnings.length} 个位置未完整读取'),
+                label: Text('${state.registryWarnings.length} 个位置未完成核对'),
                 style: TextButton.styleFrom(foregroundColor: AppColors.warning),
               ),
             ),
@@ -624,7 +620,11 @@ class _RegistryCleanPageState extends State<RegistryCleanPage> {
           : entries.isEmpty
           ? EmptyState(
               icon: Icons.health_and_safety_rounded,
-              title: query.isEmpty ? '暂无可清理的注册表记录' : '没有匹配的记录',
+              title: query.isNotEmpty
+                  ? '没有匹配的记录'
+                  : state.registryCoverage.isEmpty
+                  ? '扫描失效记录'
+                  : '暂无可清理的注册表记录',
             )
           : ListView.builder(
               key: const PageStorageKey('registry-groups'),

@@ -17,6 +17,8 @@ import '../widgets/page_shell.dart';
 import '../widgets/uninstall_loading_dialog.dart';
 import '../widgets/module_insights.dart';
 
+enum _AppSortField { name, size }
+
 class UninstallPage extends StatefulWidget {
   const UninstallPage({super.key, this.active = true});
 
@@ -29,8 +31,31 @@ class UninstallPage extends StatefulWidget {
 class _UninstallPageState extends State<UninstallPage> {
   final _searchCtrl = TextEditingController();
   String? _loadError;
-  bool _sortBySize = false;
+  _AppSortField _sortField = _AppSortField.name;
+  bool _sortAscending = true;
   bool? _knownSize;
+
+  bool get _sortBySize => _sortField == _AppSortField.size;
+
+  void _toggleSort(_AppSortField field) {
+    setState(() {
+      if (_sortField == field) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortField = field;
+        // 名称默认 A→Z；大小默认大→小
+        _sortAscending = field == _AppSortField.name;
+      }
+    });
+  }
+
+  void _sortBySizeDescending() {
+    setState(() {
+      _sortField = _AppSortField.size;
+      _sortAscending = false;
+      _knownSize = null;
+    });
+  }
 
   @override
   void initState() {
@@ -71,28 +96,24 @@ class _UninstallPageState extends State<UninstallPage> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final matchingApps = state.installedApps;
-    final knownCount = matchingApps
-        .where((app) => app.estimatedSizeBytes > 0)
-        .length;
+    final knownCount = matchingApps.where((app) => app.hasSize).length;
     final knownBytes = matchingApps.fold<int>(
       0,
       (sum, app) => sum + app.estimatedSizeBytes,
     );
     final apps =
         matchingApps
-            .where(
-              (app) =>
-                  _knownSize == null ||
-                  (app.estimatedSizeBytes > 0) == _knownSize,
-            )
+            .where((app) => _knownSize == null || app.hasSize == _knownSize)
             .toList()
-          ..sort(
-            (a, b) => _sortBySize
-                ? b.estimatedSizeBytes.compareTo(a.estimatedSizeBytes)
-                : a.displayName.toLowerCase().compareTo(
-                    b.displayName.toLowerCase(),
-                  ),
-          );
+          ..sort((a, b) {
+            if (_sortField == _AppSortField.size) {
+              return _compareSize(a, b, ascending: _sortAscending);
+            }
+            final cmp = a.displayName.toLowerCase().compareTo(
+              b.displayName.toLowerCase(),
+            );
+            return _sortAscending ? cmp : -cmp;
+          });
 
     return Padding(
       padding: kPagePadding,
@@ -118,15 +139,30 @@ class _UninstallPageState extends State<UninstallPage> {
                       : () => _loadApps(force: true),
                   icon: const Icon(Icons.refresh_rounded, size: 18),
                 ),
-                ModuleSelect<bool>(
+                ModuleSelect<_AppSortField>(
                   label: '软件排序',
-                  value: _sortBySize,
+                  value: _sortField,
                   items: const [
-                    ModuleSelectItem(value: false, child: Text('按名称排序')),
-                    ModuleSelectItem(value: true, child: Text('按大小排序')),
+                    ModuleSelectItem(
+                      value: _AppSortField.name,
+                      child: Text('按名称排序'),
+                    ),
+                    ModuleSelectItem(
+                      value: _AppSortField.size,
+                      child: Text('按大小排序'),
+                    ),
                   ],
-                  onChanged: (value) =>
-                      setState(() => _sortBySize = value ?? false),
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() {
+                      if (_sortField == value) {
+                        _sortAscending = !_sortAscending;
+                      } else {
+                        _sortField = value;
+                        _sortAscending = value == _AppSortField.name;
+                      }
+                    });
+                  },
                 ),
               ],
             ),
@@ -136,7 +172,7 @@ class _UninstallPageState extends State<UninstallPage> {
             ModuleInsights(
               label: '软件占用',
               value: formatBytes(knownBytes),
-              hint: '不含未报告大小的软件 · 圆环按数量分布',
+              hint: '含安装目录估算大小 · 圆环按数量分布',
               icon: Icons.apps_rounded,
               segments: [
                 InsightSegment(
@@ -164,11 +200,8 @@ class _UninstallPageState extends State<UninstallPage> {
                   amount: 0,
                   value: '↓',
                   color: AppColors.accent,
-                  selected: _sortBySize,
-                  onTap: () => setState(() {
-                    _sortBySize = true;
-                    _knownSize = null;
-                  }),
+                  selected: _sortBySize && !_sortAscending,
+                  onTap: _sortBySizeDescending,
                 ),
               ],
             ),
@@ -223,44 +256,42 @@ class _UninstallPageState extends State<UninstallPage> {
                           child: LayoutBuilder(
                             builder: (context, constraints) => Row(
                               children: [
-                                Expanded(
+                                SortableHeaderCell(
+                                  label: '软件',
                                   flex: 3,
-                                  child: Text(
-                                    '软件',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 13,
-                                    ),
-                                  ),
+                                  active: _sortField == _AppSortField.name,
+                                  ascending: _sortAscending,
+                                  tooltip: '按软件名称排序',
+                                  onTap: () => _toggleSort(_AppSortField.name),
                                 ),
                                 if (constraints.maxWidth >= 688)
-                                  Expanded(
+                                  const Expanded(
                                     flex: 2,
                                     child: Text(
                                       '发布者',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w600,
                                         fontSize: 13,
+                                        color: AppColors.textSecondary,
                                       ),
                                     ),
                                   ),
-                                SizedBox(
+                                SortableHeaderCell(
+                                  label: '大小',
                                   width: 100,
-                                  child: Text(
-                                    '大小',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 13,
-                                    ),
-                                  ),
+                                  active: _sortField == _AppSortField.size,
+                                  ascending: _sortAscending,
+                                  tooltip: '按占用大小排序',
+                                  onTap: () => _toggleSort(_AppSortField.size),
                                 ),
-                                SizedBox(
+                                const SizedBox(
                                   width: 100,
                                   child: Text(
                                     '操作',
                                     style: TextStyle(
                                       fontWeight: FontWeight.w600,
                                       fontSize: 13,
+                                      color: AppColors.textSecondary,
                                     ),
                                   ),
                                 ),
@@ -293,15 +324,17 @@ class _UninstallPageState extends State<UninstallPage> {
                                         : () => _confirmUninstall(app),
                                   ),
                                 ],
-                                child: _AppRow(
-                                  app: app,
-                                  fraction: knownBytes <= 0
-                                      ? 0
-                                      : app.estimatedSizeBytes / knownBytes,
-                                  onUninstall:
-                                      state.loadingApps || !app.canUninstall
-                                      ? null
-                                      : () => _confirmUninstall(app),
+                                child: InteractiveSurface(
+                                  child: _AppRow(
+                                    app: app,
+                                    fraction: knownBytes <= 0
+                                        ? 0
+                                        : app.estimatedSizeBytes / knownBytes,
+                                    onUninstall:
+                                        state.loadingApps || !app.canUninstall
+                                        ? null
+                                        : () => _confirmUninstall(app),
+                                  ),
                                 ),
                               );
                             },
@@ -314,6 +347,25 @@ class _UninstallPageState extends State<UninstallPage> {
         ],
       ),
     );
+  }
+
+  /// 大小排序：未知大小（0）始终排在末尾，不参与升降序翻转
+  static int _compareSize(
+    InstalledApp a,
+    InstalledApp b, {
+    required bool ascending,
+  }) {
+    final aSize = a.estimatedSizeBytes;
+    final bSize = b.estimatedSizeBytes;
+    final aMissing = aSize <= 0;
+    final bMissing = bSize <= 0;
+    if (aMissing && bMissing) {
+      return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    }
+    if (aMissing) return 1;
+    if (bMissing) return -1;
+    final cmp = aSize.compareTo(bSize);
+    return ascending ? cmp : -cmp;
   }
 
   Future<void> _confirmUninstall(InstalledApp app) async {
@@ -433,14 +485,29 @@ class _AppRow extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      app.estimatedSizeKb != null
+                      app.hasRegistrySize
                           ? formatBytes(app.estimatedSizeBytes)
+                          : app.sizeIsMeasured
+                          ? '~${formatBytes(app.estimatedSizeBytes)}'
                           : '—',
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
+                      style: TextStyle(
+                        color: app.hasSize
+                            ? AppColors.textSecondary
+                            : AppColors.textTertiary,
                         fontSize: 12,
+                        fontWeight: app.sizeIsMeasured
+                            ? FontWeight.w500
+                            : FontWeight.w400,
                       ),
                     ),
+                    if (app.sizeIsMeasured)
+                      const Text(
+                        '目录估算',
+                        style: TextStyle(
+                          color: AppColors.textTertiary,
+                          fontSize: 10,
+                        ),
+                      ),
                     if (fraction > 0) ...[
                       const SizedBox(height: 6),
                       Padding(

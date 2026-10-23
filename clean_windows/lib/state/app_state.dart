@@ -10,7 +10,9 @@ import '../models/scan_options.dart';
 import '../models/installed_app.dart';
 import '../services/app_icon_service.dart';
 import '../services/clean_service.dart';
+import '../services/health_check_service.dart';
 import '../services/file_actions.dart';
+import '../services/file_operability.dart';
 import '../services/disk_services.dart';
 import '../services/module_cache.dart';
 import '../services/registry_scan_service.dart';
@@ -18,13 +20,18 @@ import '../services/scan_service.dart';
 import '../services/uninstall_service.dart';
 import '../services/whitelist_service.dart';
 import '../services/activity_service.dart';
+import '../services/system_cleanup_service.dart';
+import '../services/occupied_file_service.dart';
 
 /// 全局应用状态
 class AppState extends ChangeNotifier {
   // Versioned because older snapshots do not contain file-level boundaries.
-  static const _scanCacheKey = 'results_v7';
+  static const _scanCacheKey = 'results_v12_defaults_no_dumps';
   AppState({
     bool scanOnStart = false,
+    HealthCheckController? healthChecks,
+    SystemCleanupController? systemCleanup,
+    OccupiedFileCoordinator? occupiedFiles,
     ScanService? scanService,
     CleanService? cleanService,
     UninstallService? uninstallService,
@@ -34,7 +41,12 @@ class AppState extends ChangeNotifier {
     ModuleCache? scanCache,
     ModuleCache? preferencesCache,
     ActivityJournal? journal,
-  }) : journal = journal ?? ActivityJournal(enabled: !debugSkipProcess),
+    // ignore: prefer_initializing_formals
+  }) : systemCleanup = systemCleanup ?? SystemCleanupController(),
+       occupiedFiles = occupiedFiles ?? const WindowsOccupiedFileCoordinator(),
+       // ignore: prefer_initializing_formals
+       _healthChecks = healthChecks,
+       journal = journal ?? ActivityJournal(enabled: !debugSkipProcess),
        _forceScanOnStart = scanOnStart,
        _scanService = scanService ?? ScanService(),
        _cleanService = cleanService ?? CleanService(),
@@ -49,6 +61,8 @@ class AppState extends ChangeNotifier {
              namespace: 'preferences',
              ttl: const Duration(days: 3650),
            ) {
+    this.systemCleanup.addListener(_onSystemCleanupChanged);
+    _healthChecks?.addListener(_onHealthChanged);
     _scanService.whitelist = _whitelist;
     _cleanService.whitelist = _whitelist;
     _options = ScanOptions.fromJson(
@@ -61,6 +75,8 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  final SystemCleanupController systemCleanup;
+  final OccupiedFileCoordinator occupiedFiles;
   final bool _forceScanOnStart;
   final ActivityJournal journal;
   bool _startupScanHandled = false;
@@ -123,6 +139,41 @@ class AppState extends ChangeNotifier {
   WhitelistService get whitelist => _whitelist;
   AppIconService get iconService => _icons;
 
+  HealthCheckController? _healthChecks;
+  HealthCheckController get healthChecks {
+    return _healthChecks ??= HealthCheckController()
+      ..addListener(_onHealthChanged);
+  }
+
+  void _onHealthChanged() => notifyListeners();
+
+  void _onSystemCleanupChanged() {
+    if (systemCleanup.busy) {
+      final analyzing = systemCleanup.phase == SystemCleanupPhase.analyzing;
+      final percent = systemCleanup.progress;
+      TaskBoard.instance.update(
+        'system-cleanup',
+        '系统组件清理',
+        '${analyzing ? '正在分析系统组件' : '正在清理系统组件'}'
+            '${percent == null ? '' : ' · ${(percent * 100).toStringAsFixed(0)}%'}',
+        cancel: analyzing ? systemCleanup.cancelAnalysis : null,
+      );
+    } else {
+      TaskBoard.instance.finish('system-cleanup');
+    }
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    systemCleanup.removeListener(_onSystemCleanupChanged);
+    TaskBoard.instance.finish('system-cleanup');
+    systemCleanup.dispose();
+    _healthChecks?.removeListener(_onHealthChanged);
+    _healthChecks?.dispose();
+    super.dispose();
+  }
+
   // ---- 扫描 ----
   bool _scanning = false;
   String? _scanError;
@@ -137,6 +188,7 @@ class AppState extends ChangeNotifier {
   bool get scanning => _scanning;
   bool get cleaning => _cleaning;
   ScanProgress get progress => _progress;
+
   Map<CleanCategory, ScanCategory> get results => Map.unmodifiable(_results);
   DateTime? get lastScanAt => _lastScanAt;
   DateTime? get lastCleanAt => _lastCleanAt;
@@ -212,36 +264,111 @@ class AppState extends ChangeNotifier {
     _scanService.cancellation?.cancel();
   }
 
+  List<String> get scannedInUsePaths => {
+    for (final category in _results.values) ...category.inUsePaths,
+    for (final category in _results.values)
+      for (final item in category.items) ...item.blockedFiles,
+  }.toList(growable: false);
+
+  Future<OccupiedFileSession?> openScannedOccupiedSession() =>
+      occupiedFiles.open(scannedInUsePaths);
+
+  Future<OccupiedFileSession?> openSelectedOccupiedSession({
+    Set<CleanCategory>? categories,
+  }) async {
+    final paths = _results.values
+        .where(
+          (category) =>
+              categories == null || categories.contains(category.category),
+        )
+        .expand((category) => category.items)
+        .where((item) => item.selected)
+        .expand((item) => item.scannedFiles ?? const <String>[])
+        .toSet()
+        .toList();
+    final inUse = <String>[];
+    for (var offset = 0; offset < paths.length; offset += 256) {
+      final end = (offset + 256).clamp(0, paths.length);
+      final report = await inspectCleanupPaths(paths.sublist(offset, end));
+      inUse.addAll(
+        report.blocked.entries
+            .where((entry) => entry.value.reason == CleanupBlockReason.inUse)
+            .map((entry) => entry.key),
+      );
+    }
+    return occupiedFiles.open(inUse);
+  }
+
+  /// Cleanup owns file scans only. System inspections run from their feature pages.
+  Future<void> scanOverview() => scanSpaceCleanup();
+
+  Future<void> scanTemporaryFiles() async {
+    if (_scanning || _cleaning || _savingOptions || systemCleanup.busy) {
+      throw StateError('当前有扫描或清理任务');
+    }
+    final previous = _results[CleanCategory.systemCache];
+    _scanService.temporaryOnly = true;
+    try {
+      await scan(categories: {CleanCategory.systemCache}, force: true);
+    } finally {
+      _scanService.temporaryOnly = false;
+      final current = _results[CleanCategory.systemCache];
+      if (current != null && previous != null) {
+        _results[CleanCategory.systemCache] = ScanCategory(
+          category: current.category,
+          items: [
+            ...current.items,
+            ...previous.items.where(
+              (i) => i.id != 'user_temp' && i.id != 'windows_temp',
+            ),
+          ],
+          scanDuration: current.scanDuration,
+          error: current.error,
+          unreadableCount: current.unreadableCount,
+          blockedFileCount: current.blockedFileCount,
+          inUsePaths: current.inUsePaths,
+        );
+        notifyListeners();
+        await _saveScanCache(writeAsync: true);
+      }
+    }
+  }
+
+  Future<void> scanSpaceCleanup() =>
+      scan(categories: spaceCleanupScanCategories, force: true);
+
   Future<void> scan({
     Set<CleanCategory>? categories,
     bool force = false,
   }) async {
-    if (_scanning || _cleaning || _savingOptions) return;
+    if (_scanning || _cleaning || _savingOptions || systemCleanup.busy) return;
 
     _scanGeneration++;
     _scanning = true;
     final cancellation = _scanService.cancellation = CleanCancellation();
     _scanError = null;
+    final requestedCategories = _scanService
+        .categoriesForScan(categories)
+        .toSet();
+    final taskTitle = categories?.length == 1
+        ? '${categories!.single.title}扫描'
+        : '空间清理扫描';
     _progress = ScanProgress(
-      totalCategories: _scanService.categoriesForScan(categories).length,
+      totalCategories: requestedCategories.length,
       message: '准备扫描…',
     );
     notifyListeners();
 
-    TaskBoard.instance.update('scan', '一键扫描', '准备扫描', cancel: cancelScan);
+    TaskBoard.instance.update('scan', taskTitle, '准备扫描', cancel: cancelScan);
 
     try {
-      if (force && categories == null) {
-        _results.clear();
-      }
-
       final results = await _scanService.scanAll(
         categories: categories,
         onProgress: (p) {
           _progress = p;
           TaskBoard.instance.update(
             'scan',
-            '一键扫描',
+            taskTitle,
             '${p.message}\n${p.currentPath}',
             cancel: cancelScan,
           );
@@ -255,17 +382,16 @@ class AppState extends ChangeNotifier {
               item.selected = _selectedDownloadIds.contains(item.id);
             }
           }
-          final totalFound = _results.values.fold<int>(
-            0,
-            (s, c) => s + c.totalSizeBytes,
-          );
+          final totalFound = _results.values
+              .where((entry) => requestedCategories.contains(entry.category))
+              .fold<int>(0, (sum, entry) => sum + entry.totalSizeBytes);
           _progress = _progress.copyWith(foundBytes: totalFound);
           notifyListeners();
         },
       );
 
       // 收尾合并（保证完整）
-      if (categories == null) {
+      if (categories == null && !cancellation.requested) {
         _results
           ..clear()
           ..addAll(results);
@@ -309,6 +435,9 @@ class AppState extends ChangeNotifier {
           (e) => {
             'category': e.key.name,
             'error': e.value.error,
+            'unreadableCount': e.value.unreadableCount,
+            'blockedFileCount': e.value.blockedFileCount,
+            'inUsePaths': e.value.inUsePaths,
             'items': e.value.items
                 .map(
                   (i) => {
@@ -320,6 +449,9 @@ class AppState extends ChangeNotifier {
                     'note': i.note,
                     'scannedFiles': i.scannedFiles,
                     'fileSignatures': i.fileSignatures,
+                    'blockedSizeBytes': i.blockedSizeBytes,
+                    'blockedFileCount': i.blockedFileCount,
+                    'blockedFiles': i.blockedFiles,
                     'appName': i.appName,
                     'iconPath': i.iconPath,
                     'removeEmptyDirectory': i.removeEmptyDirectory,
@@ -327,10 +459,7 @@ class AppState extends ChangeNotifier {
                     'registryValueData': i.registryValueData,
                     'registryExecutable': i.registryExecutable,
                     'autoSelect':
-                        automaticallySelectCleanupItem(i.category, i.id) &&
-                        i.scannedFiles != null &&
-                        i.scannedFiles!.isNotEmpty &&
-                        i.scannedFiles!.every(isConservativeTemporaryFile),
+                        i.category.defaultSelected && i.hasCleanableFiles,
                   },
                 )
                 .toList(),
@@ -366,6 +495,13 @@ class AppState extends ChangeNotifier {
               sizeBytes: (ir['sizeBytes'] as num?)?.toInt() ?? 0,
               category: cat,
               fileCount: (ir['fileCount'] as num?)?.toInt() ?? 0,
+              blockedSizeBytes: (ir['blockedSizeBytes'] as num?)?.toInt() ?? 0,
+              blockedFileCount: (ir['blockedFileCount'] as num?)?.toInt() ?? 0,
+              blockedFiles: ir['blockedFiles'] is List
+                  ? List<String>.unmodifiable(
+                      (ir['blockedFiles'] as List).map((e) => e.toString()),
+                    )
+                  : const [],
               note: ir['note']?.toString(),
               scannedFiles: ir['scannedFiles'] is List
                   ? List<String>.unmodifiable(
@@ -381,12 +517,7 @@ class AppState extends ChangeNotifier {
               registryValueName: ir['registryValueName']?.toString(),
               registryValueData: ir['registryValueData']?.toString(),
               registryExecutable: ir['registryExecutable']?.toString(),
-              selected:
-                  ir['autoSelect'] == true &&
-                  automaticallySelectCleanupItem(
-                    cat,
-                    ir['id']?.toString() ?? '',
-                  ),
+              selected: ir['autoSelect'] == true && cat.defaultSelected,
             ),
           );
         }
@@ -396,11 +527,19 @@ class AppState extends ChangeNotifier {
         items: items,
         scanDuration: Duration.zero,
         error: entry['error']?.toString(),
+        unreadableCount: (entry['unreadableCount'] as num?)?.toInt() ?? 0,
+        blockedFileCount: (entry['blockedFileCount'] as num?)?.toInt() ?? 0,
+        inUsePaths: entry['inUsePaths'] is List
+            ? List<String>.unmodifiable(
+                (entry['inUsePaths'] as List).map((e) => e.toString()),
+              )
+            : const [],
       );
     }
   }
 
   void toggleItem(CleanItem item) {
+    if (!item.hasCleanableFiles) return;
     item.selected = !item.selected;
     if (item.category == CleanCategory.downloads) {
       if (item.selected) {
@@ -438,22 +577,47 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> addToWhitelist(CleanItem item) async {
-    if (!await _changeWhitelist(() => _whitelist.add(item.path))) return false;
-    _results[item.category]?.items.removeWhere((e) => e.id == item.id);
+    final category = _results[item.category];
+    final index = category?.items.indexWhere((e) => e.id == item.id) ?? -1;
+    final wasDownloadSelected = _selectedDownloadIds.remove(item.id);
+    if (index >= 0) {
+      category!.items.removeAt(index);
+      notifyListeners();
+    }
+    if (!await _changeWhitelist(() => _whitelist.add(item.path))) {
+      if (index >= 0 && identical(_results[item.category], category)) {
+        category!.items.insert(index.clamp(0, category.items.length), item);
+        if (wasDownloadSelected) _selectedDownloadIds.add(item.id);
+        notifyListeners();
+      }
+      return false;
+    }
     _scanCache.invalidate(_scanCacheKey);
-    notifyListeners();
     return true;
   }
 
   Future<bool> addCategoryToWhitelist(ScanCategory category) async {
+    final originalItems = List<CleanItem>.of(category.items);
+    final selectedDownloads = category.category == CleanCategory.downloads
+        ? originalItems
+              .where((item) => _selectedDownloadIds.remove(item.id))
+              .map((item) => item.id)
+              .toSet()
+        : const <String>{};
+    category.items.clear();
+    notifyListeners();
     if (!await _changeWhitelist(
-      () => _whitelist.addAll(category.items.map((e) => e.path)),
+      () => _whitelist.addAll(originalItems.map((e) => e.path)),
     )) {
+      if (identical(_results[category.category], category) &&
+          category.items.isEmpty) {
+        category.items.addAll(originalItems);
+        _selectedDownloadIds.addAll(selectedDownloads);
+        notifyListeners();
+      }
       return false;
     }
-    category.items.clear();
     _scanCache.invalidate(_scanCacheKey);
-    notifyListeners();
     return true;
   }
 
@@ -485,10 +649,13 @@ class AppState extends ChangeNotifier {
 
   Future<CleanReport> cleanSelected({
     Set<CleanCategory>? categories,
+    Set<String>? itemIds,
     void Function(CleanItem item, String message, int done, int total)?
     onProgress,
   }) async {
-    if (_cleaning || _scanning || _savingOptions) return CleanReport.empty();
+    if (_cleaning || _scanning || _savingOptions || systemCleanup.busy) {
+      return CleanReport.empty();
+    }
     _cleaning = true;
     final cancellation = _cleanCancellation = CleanCancellation();
     TaskBoard.instance.update(
@@ -506,7 +673,12 @@ class AppState extends ChangeNotifier {
                 categories == null || categories.contains(category.category),
           )
           .expand((c) => c.items)
-          .where((i) => i.selected)
+          .where(
+            (i) =>
+                i.selected &&
+                i.hasCleanableFiles &&
+                (itemIds == null || itemIds.contains(i.id)),
+          )
           .toList();
 
       final report = await _cleanService.cleanItems(
@@ -543,11 +715,33 @@ class AppState extends ChangeNotifier {
         final category = entry.value;
         _results[entry.key] = ScanCategory(
           category: category.category,
-          items: category.items
-              .where((item) => !completedItems.contains(item))
-              .toList(),
+          items: [
+            for (final item in category.items)
+              if (!completedItems.contains(item))
+                item
+              else if (item.blockedFileCount > 0)
+                CleanItem(
+                  id: item.id,
+                  name: item.name,
+                  path: item.path,
+                  sizeBytes: 0,
+                  category: item.category,
+                  selected: false,
+                  scannedFiles: const [],
+                  fileSignatures: const {},
+                  appName: item.appName,
+                  iconPath: item.iconPath,
+                  note: item.note,
+                  blockedSizeBytes: item.blockedSizeBytes,
+                  blockedFileCount: item.blockedFileCount,
+                  blockedFiles: item.blockedFiles,
+                ),
+          ],
           scanDuration: category.scanDuration,
           error: category.error,
+          unreadableCount: category.unreadableCount,
+          blockedFileCount: category.blockedFileCount,
+          inUsePaths: category.inUsePaths,
         );
       }
       final completedDownloads = completedItems
@@ -584,6 +778,7 @@ class AppState extends ChangeNotifier {
       _installedAppsLoaded = true;
       _appsUpdatedAt = DateTime.now();
       unawaited(_loadIcons());
+      unawaited(_fillMissingAppSizes());
     } finally {
       _loadingApps = false;
       TaskBoard.instance.finish('apps');
@@ -605,6 +800,18 @@ class AppState extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  /// 注册表未报告大小时，后台测量安装目录并渐进刷新列表
+  Future<void> _fillMissingAppSizes() async {
+    final batch = List<InstalledApp>.from(_installedApps);
+    await _uninstallService.fillMissingSizes(
+      batch,
+      onUpdated: (_) {
+        if (_loadingApps) return;
+        notifyListeners();
+      },
+    );
   }
 
   // ---- 注册表扫描（与页面生命周期解耦）----

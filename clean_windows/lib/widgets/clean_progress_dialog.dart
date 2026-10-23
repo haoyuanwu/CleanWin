@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/clean_models.dart';
+import '../services/occupied_file_service.dart';
 import '../services/path_utils.dart';
 import '../state/app_state.dart';
 
@@ -47,9 +48,10 @@ class CleanDialogSurface extends StatelessWidget {
               textStyle: const TextStyle(
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
+                fontFamily: 'Segoe UI',
               ),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(10),
               ),
             ).copyWith(
               side: WidgetStateProperty.resolveWith(
@@ -61,9 +63,7 @@ class CleanDialogSurface extends StatelessWidget {
                       : states.contains(WidgetState.focused) ||
                             states.contains(WidgetState.hovered)
                       ? accent
-                      : (dark
-                            ? const Color(0xFF7891AE)
-                            : const Color(0xFF7B8BA3)),
+                      : Colors.transparent,
                   width: 1.5,
                 ),
               ),
@@ -79,12 +79,12 @@ class CleanDialogSurface extends StatelessWidget {
           disabledBackgroundColor: disabledFill,
           minimumSize: const Size(0, 44),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(10),
           ),
         ),
       ),
     );
-    final surface = dark ? const Color(0xFF101B31) : Colors.white;
+    final surface = dark ? const Color(0xFF192E3B) : Colors.white;
     return Dialog(
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
@@ -98,28 +98,27 @@ class CleanDialogSurface extends StatelessWidget {
         child: Container(
           clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color.lerp(surface, accent, .09)!, surface],
-            ),
-            borderRadius: BorderRadius.circular(28),
+            color: surface,
+            borderRadius: BorderRadius.circular(24),
             border: Border.all(
-              color: accent.withValues(alpha: .38),
-              width: 1.8,
+              color: accent.withValues(alpha: .25),
+              width: 1.2,
             ),
             boxShadow: [
               BoxShadow(
-                color: accent.withValues(alpha: .12),
-                blurRadius: 48,
-                spreadRadius: 2,
+                color: Colors.black.withValues(alpha: .16),
+                blurRadius: 32,
+                offset: const Offset(0, 12),
               ),
             ],
           ),
-          child: SingleChildScrollView(
-            child: Theme(
-              data: dialogTheme,
-              child: Padding(padding: const EdgeInsets.all(26), child: child),
+          child: Material(
+            color: Colors.transparent,
+            child: SingleChildScrollView(
+              child: Theme(
+                data: dialogTheme,
+                child: Padding(padding: const EdgeInsets.all(26), child: child),
+              ),
             ),
           ),
         ),
@@ -195,6 +194,116 @@ class CleanConfirmationDialog extends StatelessWidget {
                   label: const Text('确认清理'),
                 ),
               ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class OccupiedAppsDialog extends StatefulWidget {
+  const OccupiedAppsDialog({
+    super.key,
+    required this.applications,
+    required this.fileCount,
+    required this.forCleanup,
+    required this.canCloseAndRestore,
+  });
+
+  final List<OccupiedApplication> applications;
+  final int fileCount;
+  final bool forCleanup;
+  final bool canCloseAndRestore;
+
+  @override
+  State<OccupiedAppsDialog> createState() => _OccupiedAppsDialogState();
+}
+
+class _OccupiedAppsDialogState extends State<OccupiedAppsDialog> {
+  final Set<int> _selected = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final safeApps = widget.applications
+        .where((app) => app.safeToClose && app.restartable)
+        .toList();
+    return CleanDialogSurface(
+      accent: accent,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _DialogHeading(
+            icon: Icons.lock_clock_outlined,
+            accent: accent,
+            title: widget.forCleanup ? '清理前关闭占用软件？' : '关闭占用软件后重新扫描？',
+            subtitle: '${widget.fileCount} 个文件正被以下软件使用',
+          ),
+          const SizedBox(height: 20),
+          for (final app in widget.applications)
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: _selected.contains(app.pid),
+              onChanged: app.safeToClose && app.restartable
+                  ? (selected) => setState(() {
+                      if (selected == true) {
+                        _selected.add(app.pid);
+                      } else {
+                        _selected.remove(app.pid);
+                      }
+                    })
+                  : null,
+              secondary: Icon(
+                app.safeToClose && app.restartable
+                    ? Icons.apps_rounded
+                    : Icons.shield_outlined,
+                color: app.safeToClose && app.restartable
+                    ? accent
+                    : Theme.of(context).colorScheme.error,
+              ),
+              title: Text(app.name),
+              subtitle: Text(
+                '${app.safeToClose && app.restartable ? '处理完成后自动重新打开' : '系统、服务或无法安全恢复，不会自动关闭'} · PID ${app.pid}',
+              ),
+            ),
+          const SizedBox(height: 14),
+          _Notice(
+            icon: Icons.info_outline_rounded,
+            text: widget.canCloseAndRestore
+                ? '请先保存软件中的工作。CleanWin 只请求正常退出，不会强制结束无响应进程。'
+                : '这些占用程序无法全部安全恢复。CleanWin 将保留对应文件，不会强制结束程序。',
+          ),
+          const SizedBox(height: 22),
+          Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, <int>{}),
+                child: Text(widget.forCleanup ? '不关闭，跳过占用文件' : '保留当前结果'),
+              ),
+              if (safeApps.length > 1)
+                FilledButton.tonalIcon(
+                  onPressed: () => Navigator.pop(
+                    context,
+                    safeApps.map((app) => app.pid).toSet(),
+                  ),
+                  icon: const Icon(Icons.select_all_rounded, size: 18),
+                  label: const Text('一键全部关闭'),
+                ),
+              if (widget.canCloseAndRestore)
+                FilledButton.icon(
+                  onPressed: _selected.isEmpty
+                      ? null
+                      : () => Navigator.pop(context, Set<int>.from(_selected)),
+                  icon: const Icon(Icons.restart_alt_rounded, size: 18),
+                  label: Text(widget.forCleanup ? '关闭所选并清理' : '关闭所选并重扫'),
+                ),
             ],
           ),
         ],

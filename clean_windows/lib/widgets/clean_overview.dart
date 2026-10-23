@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../services/path_utils.dart';
 import '../models/clean_models.dart';
+import '../models/workspace_structure.dart';
 import 'cosmic_scene.dart';
 import '../state/app_state.dart';
 
@@ -185,7 +186,7 @@ class _CleanOverviewState extends State<CleanOverview> {
         Text(
           state.scanError ??
               (widget.hasResults
-                  ? '默认仅选过期临时文件，其他缓存需手动确认。'
+                  ? '已默认选择可清理项目，显卡缓存除外。'
                   : '发现散落的缓存，让空间重新轻盈。'),
           style: const TextStyle(
             fontSize: 13,
@@ -258,7 +259,7 @@ class _CleanOverviewState extends State<CleanOverview> {
       center: Semantics(
         button: true,
         label: widget.hasResults
-            ? '已选总量 ${formatBytes(state.totalSelectedBytes)}，点击清理已选项目'
+            ? '已选总量 ${formatBytes(_overviewSelectedBytes(state))}，点击清理已选项目'
             : '扫描磁盘',
         child: InkWell(
           customBorder: const CircleBorder(),
@@ -295,7 +296,7 @@ class _CleanOverviewState extends State<CleanOverview> {
                 else if (widget.hasResults)
                   AnimatedByteCount(
                     key: const ValueKey('orbit-selected-total'),
-                    bytes: state.totalSelectedBytes,
+                    bytes: _overviewSelectedBytes(state),
                     style: const TextStyle(
                       fontSize: 27,
                       color: Colors.white,
@@ -416,17 +417,17 @@ class _CleanOverviewState extends State<CleanOverview> {
                 icon: Icons.blur_circular_rounded,
                 label: widget.hasResults ? '已探测内容' : '探索范围',
                 value: widget.hasResults
-                    ? formatBytes(state.totalFoundBytes)
-                    : '缓存 · 回收站 · 下载',
+                    ? formatBytes(_overviewFoundBytes(state))
+                    : '缓存 · 日志 · 回收站',
                 detail: widget.hasResults
-                    ? '${state.results.length} 个星域已检查'
-                    : '下载和回收站默认不勾选',
+                    ? '${state.categories.where((entry) => cleanupOwner(entry.category) == 0).length} 类清理内容已检查'
+                    : '扫描后默认选择，显卡缓存除外',
               ),
               const _MetricPanel(
                 icon: Icons.shield_outlined,
                 label: '保护机制',
-                value: '默认仅选过期临时文件',
-                detail: '浏览器、软件、显卡需手动选择',
+                value: '默认选择安全候选',
+                detail: '显卡缓存仍需手动选择',
               ),
             ];
             if (constraints.maxWidth < 600) {
@@ -529,3 +530,12 @@ class _MetricPanel extends StatelessWidget {
     ),
   );
 }
+
+int _overviewSelectedBytes(AppState state) => state.categories
+    .where((entry) => cleanupOwner(entry.category) == 0)
+    .expand((entry) => entry.items)
+    .where((item) => item.selected)
+    .fold<int>(0, (sum, item) => sum + item.sizeBytes);
+int _overviewFoundBytes(AppState state) => state.categories
+    .where((entry) => cleanupOwner(entry.category) == 0)
+    .fold<int>(0, (sum, entry) => sum + entry.totalSizeBytes);

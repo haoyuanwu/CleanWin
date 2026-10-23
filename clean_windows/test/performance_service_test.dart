@@ -69,10 +69,105 @@ void main() {
     expect(snapshotCalls, 1);
     processes.complete(response([]));
     expect((await first.timeout(const Duration(seconds: 1))).cpuTempC, isNull);
-    temperature.complete(PsResult(exitCode: 0, stdout: '45.5', stderr: ''));
+    temperature.complete(
+      PsResult(
+        exitCode: 0,
+        stdout: jsonEncode([
+          {
+            'Provider': 'LibreHardwareMonitor',
+            'HardwareType': 'Cpu',
+            'Name': 'CPU Package',
+            'Value': 45.5,
+          },
+        ]),
+        stderr: '',
+      ),
+    );
     await Future<void>.delayed(Duration.zero);
     expect((await service.sample()).cpuTempC, 45.5);
     expect(tempCalls, 1);
+  });
+
+  test(
+    'temperature requires a CPU sensor and prefers package over core readings',
+    () {
+      String readings(List<Map<String, dynamic>> values) => jsonEncode(values);
+      final valid = {'Provider': 'LibreHardwareMonitor', 'HardwareType': 'Cpu'};
+      final temperature = PerformanceService.parseTemperature(
+        readings([
+          {...valid, 'Name': 'CPU Core #1', 'Value': 70},
+          {...valid, 'Name': 'CPU Package', 'Value': 61.5},
+          {...valid, 'Name': 'CPU Package #2', 'Value': 63.0},
+          {...valid, 'HardwareType': 'GpuNvidia', 'Name': 'GPU', 'Value': 90},
+          {...valid, 'Name': 'Invalid', 'Value': 999},
+        ]),
+      );
+      expect(temperature?.value, 63);
+      expect(temperature?.source, contains('CPU Package #2'));
+      expect(PerformanceService.parseTemperature('45.5'), isNull);
+      expect(PerformanceService.parseTemperature('[]'), isNull);
+      expect(PerformanceService.parseTemperature('not json'), isNull);
+      expect(
+        PerformanceService.parseTemperature(
+          readings([
+            {...valid, 'Provider': 'ACPI', 'Value': 55},
+            {...valid, 'HardwareType': 'Motherboard', 'Value': 55},
+            {...valid, 'Value': 0},
+            {...valid, 'Value': -5},
+          ]),
+        ),
+        isNull,
+      );
+      expect(PerformanceService.temperatureScript, isNot(contains('MSAcpi')));
+    },
+  );
+
+  test('valid temperatures refresh every five seconds and disappear when the sensor stops', () async {
+    var now = DateTime(2026, 10, 21);
+    var available = true;
+    var queries = 0;
+    final service = PerformanceService(
+      metricsReader: () => metrics,
+      clock: () => now,
+      powerShellRunner: (script, _) async {
+        if (script == PerformanceService.temperatureScript) {
+          queries++;
+          return PsResult(
+            exitCode: 0,
+            stdout: jsonEncode(
+              available
+                  ? [
+                      {
+                        'Provider': 'OpenHardwareMonitor',
+                        'HardwareType': 'Cpu',
+                        'Name': 'CPU Core #1',
+                        'Value': 52.0,
+                      },
+                    ]
+                  : [],
+            ),
+            stderr: '',
+          );
+        }
+        return response([]);
+      },
+    );
+    await service.sample();
+    await Future<void>.delayed(Duration.zero);
+    var sample = await service.sample();
+    expect(sample.cpuTempC, 52);
+    expect(sample.cpuTempSource, contains('OpenHardwareMonitor'));
+    now = now.add(const Duration(seconds: 4));
+    await service.sample();
+    expect(queries, 1);
+    available = false;
+    now = now.add(const Duration(seconds: 2));
+    await service.sample();
+    await Future<void>.delayed(Duration.zero);
+    sample = await service.sample();
+    expect(sample.cpuTempC, isNull);
+    expect(sample.cpuTempSource, isNull);
+    expect(queries, 2);
   });
 
   test('failed queries can retry and temperatures refresh only every thirty seconds', () async {

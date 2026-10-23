@@ -5,6 +5,7 @@ import 'dart:io' as io;
 import 'process_utils.dart';
 import 'windows_runtime_metrics.dart';
 import 'windows_process_sampler.dart';
+import 'network_rates.dart';
 
 class RuntimeSnapshot {
   const RuntimeSnapshot({
@@ -15,10 +16,17 @@ class RuntimeSnapshot {
     required this.collectedAt,
     this.totalMemoryMb = 0,
     this.usedMemoryMb = 0,
+    this.cpuTempSource,
+    this.downloadBytesPerSecond,
+    this.uploadBytesPerSecond,
+    this.networkAdapters = 0,
   });
+  final double? downloadBytesPerSecond, uploadBytesPerSecond;
+  final int networkAdapters;
   final double cpuPercent;
   final double memoryUsedPercent;
   final double? cpuTempC;
+  final String? cpuTempSource;
   final List<ProcUsage> topProcesses;
   final DateTime collectedAt;
   final double totalMemoryMb;
@@ -33,7 +41,7 @@ class RuntimeSnapshot {
       ? '温度偏高'
       : tempWarn
       ? '建议关注散热'
-      : 'ACPI 温度参考值';
+      : cpuTempSource ?? 'CPU 传感器';
 }
 
 class ProcUsage {
@@ -78,10 +86,13 @@ class PerformanceService {
     PowerShellRunner? powerShellRunner,
     DateTime Function()? clock,
     this.metricsReader,
+    this.includeProcesses = true,
   }) : _run = powerShellRunner ?? runPowerShell,
        _clock = clock ?? DateTime.now,
 
        _useWorker = powerShellRunner == null;
+  final bool includeProcesses;
+  final _network = NetworkRates();
   final PowerShellRunner _run;
   final bool _useWorker;
   WindowsProcessSampler? _worker;
@@ -93,30 +104,111 @@ class PerformanceService {
   bool _readingTemperature = false;
   DateTime? _temperatureAttempt;
   double? _temperature;
+  String? _temperatureSource;
 
   // One process per snapshot; no deliberate one-second counter waits.
   // WorkingSet64 is physical working-set memory, including shared pages.
-  static const snapshotScript = r'''
+  static const networkScript = r'''
+$network=@()
+$networkOk=$true
+try {
+  foreach($adapter in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+    if($adapter.OperationalStatus -ne 'Up' -or $adapter.NetworkInterfaceType -in @('Loopback','Tunnel')){continue}
+    try {
+      $stats=$adapter.GetIPStatistics()
+      $network += [PSCustomObject]@{Id=$adapter.Id;Rx=$stats.BytesReceived;Tx=$stats.BytesSent}
+    } catch { $networkOk=$false }
+  }
+} catch { $networkOk=$false }
+if(!$networkOk){$network=$null}
+''';
+  static const resourceScript =
+      networkScript +
+      r'''
+[PSCustomObject]@{Processes=@();Network=$network;NetworkTicks=[DateTime]::UtcNow.Ticks} | ConvertTo-Json -Compress -Depth 4
+''';
+  static const snapshotScript =
+      networkScript +
+      r'''
 $ErrorActionPreference = 'Stop'
-
 $processes = @(Get-Process -ErrorAction Stop | ForEach-Object {
   $process = $_
   try {
     $memory = $process.WorkingSet64
     [PSCustomObject]@{ Name=$process.ProcessName; Id=$process.Id;
       MemMB=([double]$memory / 1MB) }
-  } catch { } # Processes can exit while their properties are being read.
+  } catch { }
 } | Sort-Object MemMB -Descending)
 [PSCustomObject]@{
   Processes = @($processes)
+  Network = $network
+  NetworkTicks = [DateTime]::UtcNow.Ticks
 } | ConvertTo-Json -Compress -Depth 4
 ''';
 
+  // Read only already-running hardware sensor providers. ACPI thermal zones can
+  // represent the motherboard and must never be presented as CPU temperature.
   static const temperatureScript = r'''
 $ErrorActionPreference = 'Stop'
-$t = Get-CimInstance -Namespace root/WMI -ClassName MSAcpi_ThermalZoneTemperature -OperationTimeoutSec 3
-if ($t) { [math]::Round(($t | Select-Object -First 1).CurrentTemperature / 10.0 - 273.15, 1) }
+$readings = @()
+foreach ($provider in @('LibreHardwareMonitor', 'OpenHardwareMonitor')) {
+  try {
+    $namespace = 'root/' + $provider
+    $cpus = @(Get-CimInstance -Namespace $namespace -ClassName Hardware -Filter "HardwareType='Cpu'" -OperationTimeoutSec 2 -ErrorAction Stop)
+    if ($cpus.Count -eq 0) { continue }
+    $ids = @($cpus | ForEach-Object { $_.Identifier })
+    $sensors = @(Get-CimInstance -Namespace $namespace -ClassName Sensor -Filter "SensorType='Temperature'" -OperationTimeoutSec 2 -ErrorAction Stop)
+    foreach ($sensor in $sensors) {
+      if ($ids -contains $sensor.Parent) {
+        $readings += [PSCustomObject]@{ Provider=$provider; HardwareType='Cpu';
+          Name=$sensor.Name; Value=$sensor.Value; Identifier=$sensor.Identifier }
+      }
+    }
+    if ($readings.Count -gt 0) { break }
+  } catch { } # Missing providers and denied namespaces are normal on many PCs.
+}
+ConvertTo-Json -InputObject @($readings) -Compress -Depth 3
 ''';
+
+  /// Select a package reading when available, otherwise the hottest CPU sensor.
+  /// Never accept a bare thermal-zone number or non-CPU hardware as CPU data.
+  static ({double value, String source})? parseTemperature(String output) {
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(output);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! List) return null;
+    final readings = <({double value, String source, bool package})>[];
+    for (final row in decoded.whereType<Map>()) {
+      final provider = row['Provider'];
+      final value = row['Value'];
+      if ((provider != 'LibreHardwareMonitor' &&
+              provider != 'OpenHardwareMonitor') ||
+          row['HardwareType'] != 'Cpu' ||
+          value is! num ||
+          !value.isFinite ||
+          value <= 0 ||
+          value > 130) {
+        continue;
+      }
+      final name = row['Name']?.toString() ?? '';
+      readings.add((
+        value: value.toDouble(),
+        source: '$provider · ${name.isEmpty ? "CPU" : name}',
+        package: RegExp(
+          r'package|tctl|tdie',
+          caseSensitive: false,
+        ).hasMatch(name),
+      ));
+    }
+    if (readings.isEmpty) return null;
+    final packages = readings.where((reading) => reading.package).toList();
+    final selected = packages.isNotEmpty ? packages : readings;
+    selected.sort((a, b) => b.value.compareTo(a.value));
+    return (value: selected.first.value, source: selected.first.source);
+  }
 
   /// Concurrent callers share one query instead of spawning overlapping samples.
   Future<RuntimeSnapshot> sample() =>
@@ -157,12 +249,17 @@ if ($t) { [math]::Round(($t | Select-Object -First 1).CurrentTemperature / 10.0 
       final memoryOrder = b.memoryMb.compareTo(a.memoryMb);
       return memoryOrder != 0 ? memoryOrder : a.pid.compareTo(b.pid);
     });
+    final rates = _network.read(raw['Network'], raw['NetworkTicks']);
     return RuntimeSnapshot(
+      downloadBytesPerSecond: rates.down,
+      uploadBytesPerSecond: rates.up,
+      networkAdapters: rates.adapters,
       cpuPercent: metrics.cpuPercent ?? 0,
       memoryUsedPercent: metrics.memoryPercent.clamp(0, 100),
       totalMemoryMb: total,
       usedMemoryMb: metrics.usedMemoryMb.clamp(0, total),
-      cpuTempC: _temperature,
+      cpuTempC: _temperatureSource == null ? null : _temperature,
+      cpuTempSource: _temperatureSource,
       topProcesses: List.unmodifiable(processes),
       collectedAt: _clock(),
     );
@@ -173,7 +270,7 @@ if ($t) { [math]::Round(($t | Select-Object -First 1).CurrentTemperature / 10.0 
     if (_readingTemperature ||
         (_temperatureAttempt != null &&
             now.difference(_temperatureAttempt!) <
-                const Duration(seconds: 30))) {
+                Duration(seconds: _temperature == null ? 30 : 5))) {
       return;
     }
     _temperatureAttempt = now;
@@ -183,16 +280,13 @@ if ($t) { [math]::Round(($t | Select-Object -First 1).CurrentTemperature / 10.0 
 
   Future<void> _readTemperature() async {
     try {
-      final result = await _run(temperatureScript, const Duration(seconds: 5));
-      final value = result.success
-          ? double.tryParse(result.stdout.trim().replaceAll(',', '.'))
-          : null;
-      _temperature =
-          value != null && value.isFinite && value >= -20 && value <= 150
-          ? value
-          : null;
+      final result = await _run(temperatureScript, const Duration(seconds: 10));
+      final reading = result.success ? parseTemperature(result.stdout) : null;
+      _temperature = reading?.value;
+      _temperatureSource = reading?.source;
     } on Exception {
       _temperature = null;
+      _temperatureSource = null;
     } finally {
       _readingTemperature = false;
     }
@@ -209,6 +303,7 @@ if ($t) { [math]::Round(($t | Select-Object -First 1).CurrentTemperature / 10.0 
   }
 
   Future<void> pause() async {
+    _network.reset();
     final worker = _worker;
     _worker = null;
     await worker?.close();
@@ -217,9 +312,10 @@ if ($t) { [math]::Round(($t | Select-Object -First 1).CurrentTemperature / 10.0 
   Future<void> dispose() => pause();
 
   Future<PsResult> _readProcesses() async {
-    if (!_useWorker) return _run(snapshotScript, const Duration(seconds: 6));
+    final script = includeProcesses ? snapshotScript : resourceScript;
+    if (!_useWorker) return _run(script, const Duration(seconds: 6));
     try {
-      return await (_worker ??= WindowsProcessSampler(snapshotScript)).sample();
+      return await (_worker ??= WindowsProcessSampler(script)).sample();
     } catch (_) {
       await pause();
       rethrow;

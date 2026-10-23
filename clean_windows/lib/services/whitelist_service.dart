@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -45,8 +46,9 @@ class WhitelistService {
 
   final List<WhitelistEntry> _entries = [];
   final String? storageDirectory;
-  final void Function(File, String)? writeSnapshot;
+  final FutureOr<void> Function(File, String)? writeSnapshot;
   File? _file;
+  Future<void> _writeTail = Future<void>.value();
   String? lastError;
   bool readable = true;
 
@@ -58,7 +60,6 @@ class WhitelistService {
   File get _storageFile {
     if (_file != null) return _file!;
     final dir = Directory(storageDirectory ?? '$localAppData\\CleanWin');
-    dir.createSync(recursive: true);
     return _file = File(p.join(dir.path, 'whitelist.json'));
   }
 
@@ -95,20 +96,21 @@ class WhitelistService {
     }
   }
 
-  void _commit(List<WhitelistEntry> next) {
+  Future<void> _commit(List<WhitelistEntry> next) async {
     if (!readable) throw StateError(lastError!);
     Directory? temporary;
     try {
       final destination = _storageFile;
-      temporary = destination.parent.createTempSync('.whitelist-');
+      await destination.parent.create(recursive: true);
+      temporary = await destination.parent.createTemp('.whitelist-');
       final staged = File(p.join(temporary.path, 'snapshot.json'));
       final data = jsonEncode(next.map((e) => e.toJson()).toList());
       if (writeSnapshot != null) {
-        writeSnapshot!(staged, data);
+        await writeSnapshot!(staged, data);
       } else {
-        staged.writeAsStringSync(data, flush: true);
+        await staged.writeAsString(data, flush: true);
       }
-      staged.renameSync(destination.path);
+      await staged.rename(destination.path);
       _entries
         ..clear()
         ..addAll(next);
@@ -120,8 +122,8 @@ class WhitelistService {
       if (temporary != null) {
         try {
           final staged = File(p.join(temporary.path, 'snapshot.json'));
-          if (staged.existsSync()) staged.deleteSync();
-          temporary.deleteSync();
+          if (await staged.exists()) await staged.delete();
+          if (await temporary.exists()) await temporary.delete();
         } on FileSystemException {
           /* Empty staging cleanup is best effort. */
         }
@@ -129,41 +131,55 @@ class WhitelistService {
     }
   }
 
-  Future<void> save() async => _commit([..._entries]);
-  Future<void> add(String path, {String? note}) => addAll([path], note: note);
-  Future<void> addAll(Iterable<String> paths, {String? note}) async {
-    final next = [..._entries];
-    for (final path in paths) {
-      final normalized = normalizePath(path);
-      if (normalized.isEmpty ||
-          next.any(
-            (entry) =>
-                normalizePath(entry.path).toLowerCase() ==
-                normalized.toLowerCase(),
-          )) {
-        continue;
-      }
-      if (!p.windows.isAbsolute(normalized)) {
-        lastError = '请输入完整的文件或文件夹路径';
-        throw FormatException(lastError!);
-      }
-      next.add(
-        WhitelistEntry(path: normalized, addedAt: DateTime.now(), note: note),
-      );
-    }
-    _commit(next);
+  Future<void> _enqueue(Future<void> Function() action) {
+    final result = _writeTail.then((_) => action());
+    _writeTail = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
   }
 
-  Future<void> remove(String path) async => _commit(
-    _entries
-        .where(
-          (e) =>
-              normalizePath(e.path).toLowerCase() !=
-              normalizePath(path).toLowerCase(),
-        )
-        .toList(),
-  );
-  Future<void> clear() async => _commit([]);
+  Future<void> save() => _enqueue(() => _commit([..._entries]));
+  Future<void> add(String path, {String? note}) => addAll([path], note: note);
+  Future<void> addAll(Iterable<String> paths, {String? note}) {
+    final additions = paths.toList(growable: false);
+    return _enqueue(() async {
+      final next = [..._entries];
+      for (final path in additions) {
+        final normalized = normalizePath(path);
+        if (normalized.isEmpty ||
+            next.any(
+              (entry) =>
+                  normalizePath(entry.path).toLowerCase() ==
+                  normalized.toLowerCase(),
+            )) {
+          continue;
+        }
+        if (!p.windows.isAbsolute(normalized)) {
+          lastError = '请输入完整的文件或文件夹路径';
+          throw FormatException(lastError!);
+        }
+        next.add(
+          WhitelistEntry(path: normalized, addedAt: DateTime.now(), note: note),
+        );
+      }
+      await _commit(next);
+    });
+  }
+
+  Future<void> remove(String path) {
+    final normalized = normalizePath(path).toLowerCase();
+    return _enqueue(
+      () => _commit(
+        _entries
+            .where((e) => normalizePath(e.path).toLowerCase() != normalized)
+            .toList(),
+      ),
+    );
+  }
+
+  Future<void> clear() => _enqueue(() => _commit([]));
 
   bool contains(String path) {
     final n = normalizePath(path);

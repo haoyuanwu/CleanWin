@@ -233,8 +233,8 @@ Invoke-Expression $helpers
 $start=$scripts[0].IndexOf('$specs = @(')
 $end=$scripts[0].IndexOf('$views = ',$start)
 Invoke-Expression ($scripts[0].Substring($start,$end-$start))
-if($specs.Count -ne 5){exit 9}
-if(@($specs | Where-Object {$_.Kind -notin @('startup','mui','appPaths')}).Count){exit 10}
+if($specs.Count -ne 14){exit 9}
+if(@($specs | Where-Object {$_.Kind -notin @('startup','mui','appPaths','fonts','sharedDll','applications','contextMenu')}).Count){exit 10}
 if(@($specs | Where-Object {$_.Kind -eq 'mui' -and !$_.UserOnly}).Count){exit 11}
 if((Target '"C:\Program Files\App\app.exe" --background' 'command') -cne 'C:\Program Files\App\app.exe'){exit 2}
 if((Target 'C:\Program Files\App\app.exe --background' 'command') -cne 'C:\Program Files\App\app.exe'){exit 3}

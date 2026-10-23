@@ -12,7 +12,7 @@ const insightColors = <Color>[
   AppColors.accent,
   AppColors.success,
   AppColors.warning,
-  Color(0xFF8B5CF6),
+  Color(0xFF82718B),
   AppColors.textTertiary,
 ];
 
@@ -56,25 +56,18 @@ class ModuleInsights extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     clipBehavior: Clip.antiAlias,
     decoration: BoxDecoration(
-      gradient: LinearGradient(
-        colors: [
-          Colors.white.withValues(alpha: .92),
-          Color.lerp(Theme.of(context).colorScheme.primary, Colors.white, .94)!,
-        ],
-        begin: Alignment.centerLeft,
-        end: Alignment.bottomRight,
-      ),
-      borderRadius: BorderRadius.circular(20),
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
       border: Border.all(
         color: Theme.of(context).colorScheme.outlineVariant,
-        width: 1.6,
+        width: 1.2,
       ),
     ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(16),
           child: LayoutBuilder(
             builder: (context, constraints) {
               final compact = constraints.maxWidth < 660;
@@ -119,7 +112,7 @@ class ModuleInsights extends StatelessWidget {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  fontSize: 11,
+                                  fontSize: 12,
                                   color: AppColors.textSecondary,
                                 ),
                               ),
@@ -128,14 +121,26 @@ class ModuleInsights extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          value,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 23,
-                            height: 1.15,
-                            fontWeight: FontWeight.w700,
+                        AnimatedSwitcher(
+                          duration: MediaQuery.disableAnimationsOf(context)
+                              ? Duration.zero
+                              : const Duration(milliseconds: 200),
+                          layoutBuilder: (current, previous) => Stack(
+                            alignment: Alignment.centerLeft,
+                            children: [...previous, ?current],
+                          ),
+                          child: Text(
+                            value,
+                            key: ValueKey(value),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 26,
+                              color: AppColors.textPrimary,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                              height: 1.15,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ],
@@ -187,7 +192,7 @@ class _SegmentButton extends StatelessWidget {
     child: Material(
       color: segment.selected
           ? segment.color.withValues(alpha: .12)
-          : Colors.white.withValues(alpha: .7),
+          : AppColors.surface,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         key: ValueKey('insight-${segment.label}'),
@@ -206,10 +211,10 @@ class _SegmentButton extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                width: segment.selected ? 2 : 1.5,
+                width: 1.2,
                 color: segment.selected
                     ? segment.color.withValues(alpha: .4)
-                    : AppColors.border,
+                    : Colors.transparent,
               ),
             ),
             child: Row(

@@ -273,6 +273,17 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Vacation.mp4'), findsOneWidget);
       expect(state.selectedDownloadIds, {'Vacation.mp4'});
+      await tester.tap(find.text('取消选择'));
+      await tester.pumpAndSettle();
+      expect(state.selectedDownloadIds, isEmpty);
+      expect(
+        state.results[CleanCategory.downloads]!.items.any(
+          (item) => item.selected,
+        ),
+        isFalse,
+      );
+      expect(find.text('取消选择'), findsNothing);
+      expect(find.text('Vacation.mp4'), findsOneWidget);
     },
   );
 
@@ -360,8 +371,9 @@ void main() {
       final graphs = tester
           .widgetList<TrendGraph>(find.byType(TrendGraph))
           .toList();
-      expect(graphs, hasLength(3));
+      expect(graphs, hasLength(5));
       expect(graphs.first.values, hasLength(60));
+      expect(graphs[2].values.every((value) => value == null), isTrue);
       expect(graphs.last.values.every((value) => value == null), isTrue);
       await tester.tap(find.text('暂停刷新'));
       await tester.pump();
@@ -433,6 +445,33 @@ void main() {
             output.writeAsBytesSync(bytes!.buffer.asUint8List());
             image.dispose();
           });
+          if (name == 'downloads') {
+            await tester.tap(find.text('Windows.iso'));
+            await tester.pumpAndSettle();
+            expect(find.text('已选 1 项'), findsOneWidget);
+            expect(find.text('删除 5.3 GB'), findsOneWidget);
+            expect(
+              tester.takeException(),
+              isNull,
+              reason: 'selection shelf at $width',
+            );
+            await tester.runAsync(() async {
+              final boundary =
+                  key.currentContext!.findRenderObject()!
+                      as RenderRepaintBoundary;
+              final image = await boundary.toImage();
+              final bytes = await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              File(
+                '.dart_tool/ui_previews/downloads-selected-${width.toInt()}.png',
+              ).writeAsBytesSync(bytes!.buffer.asUint8List());
+              image.dispose();
+            });
+            await tester.tap(find.text('取消选择'));
+            await tester.pumpAndSettle();
+            expect(state.selectedDownloadIds, isEmpty);
+          }
           if (name == 'startup' && width == 1000) {
             // Render the real soft menu shadow; the test default substitutes
             // a solid black outline when shadows are disabled.
@@ -440,7 +479,7 @@ void main() {
             debugDisableShadows = false;
             await tester.tap(find.byTooltip('启动项来源'));
             await tester.pumpAndSettle();
-            expect(find.byType(Scrollbar), findsNothing);
+            expect(find.byType(Scrollbar), findsWidgets);
             await tester.runAsync(() async {
               final boundary =
                   key.currentContext!.findRenderObject()!

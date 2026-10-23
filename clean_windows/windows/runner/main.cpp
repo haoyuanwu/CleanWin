@@ -8,6 +8,16 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // The embedded manifest requests UAC before entry. Refuse to scan if a
+  // modified launcher or executable strips that requirement.
+  if (!IsProcessElevated()) {
+    MessageBoxW(nullptr,
+        L"CleanWin 需要管理员权限才能读取系统清理目录。\n"
+        L"请允许 Windows 管理员授权，或以管理员身份启动程序。",
+        L"CleanWin - 需要管理员权限", MB_OK | MB_ICONWARNING);
+    return ERROR_ELEVATION_REQUIRED;
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {

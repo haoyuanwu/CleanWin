@@ -116,8 +116,16 @@ void main() {
     expect(files, containsAll([gpu.path, browser.path, app.path]));
     expect(
       items
-          .where((item) => item.category != CleanCategory.systemCache)
+          .where((item) => item.category == CleanCategory.nvidiaCache)
           .every((item) => !item.selected),
+      isTrue,
+    );
+    expect(
+      items
+          .where((item) =>
+              item.category == CleanCategory.browserCache ||
+              item.category == CleanCategory.appCache)
+          .every((item) => item.selected),
       isTrue,
     );
     service.options = const ScanOptions(
@@ -160,7 +168,7 @@ void main() {
   });
 
   test(
-    'cached results never reselect GPU, browser, thumbnail or program caches',
+    'cached results restore eligible caches but never select GPU cache',
     () async {
       final local = env['LOCALAPPDATA']!;
       put(p.join(local, 'Temp', 'old.tmp'));
@@ -193,14 +201,13 @@ void main() {
         preferencesCache: preferences,
         whitelistService: WhitelistService(storageDirectory: fixture.path),
       );
-      expect(restored.totalSelectedCount, 1);
+      expect(restored.totalSelectedCount, 3);
       expect(
         restored.categories
             .expand((category) => category.items)
             .where((item) => item.selected)
-            .single
-            .id,
-        'user_temp',
+            .map((item) => item.category),
+        everyElement(isNot(CleanCategory.nvidiaCache)),
       );
       expect(restored.results[CleanCategory.nvidiaCache]!.selectedCount, 0);
       restored.dispose();

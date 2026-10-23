@@ -213,7 +213,7 @@ void main() {
   );
 
   testWidgets(
-    'cleanup footer includes manual selections and updates when unchecked',
+    'overview totals ignore downloads selected in another workspace',
     (tester) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(1280, 900);
@@ -223,42 +223,21 @@ void main() {
       await tester.pumpWidget(page(const CleanPage()));
       await tester.pumpAndSettle();
       final amount = find.byKey(const ValueKey('clean-selected-total'));
-      void expectBytes(int bytes) {
-        expect(tester.widget<AnimatedByteCount>(amount).bytes, bytes);
-      }
-
       const mb = 1024 * 1024;
-      expectBytes(48 * mb);
-      await tester.tap(find.text('查看结果'));
+      expect(tester.widget<AnimatedByteCount>(amount).bytes, 48 * mb);
+      state.toggleCategory(state.results[CleanCategory.downloads]!, true);
       await tester.pumpAndSettle();
-      final downloads = state.results[CleanCategory.downloads]!;
-      final folderCard = find.byKey(const ValueKey('downloads-false'));
-      final categoryCheckbox = find.descendant(
-        of: folderCard,
-        matching: find.byType(Checkbox),
-      );
-      await tester.ensureVisible(categoryCheckbox);
-      await tester.tap(categoryCheckbox);
-      await tester.pumpAndSettle();
-      expectBytes(96 * mb);
-      expect(find.text('已选 · 2 项'), findsOneWidget);
-      expect(find.text('缓存 48.0 MB · 其他所选 48.0 MB'), findsOneWidget);
-      state.toggleItem(downloads.items.single);
-      await tester.pumpAndSettle();
-      expectBytes(48 * mb);
-      expect(find.text('清理其他所选'), findsNothing);
+      expect(tester.widget<AnimatedByteCount>(amount).bytes, 48 * mb);
+      expect(find.text('已选 · 1 项'), findsOneWidget);
       state.toggleCategory(state.results[CleanCategory.systemCache]!, false);
       await tester.pumpAndSettle();
-      expectBytes(0);
-      expect(find.text('已选 · 0 项'), findsOneWidget);
-      state.toggleCategory(downloads, true);
-      await tester.pumpAndSettle();
-      expectBytes(48 * mb);
-      final smart = tester.widget<ElevatedButton>(
-        find.widgetWithText(ElevatedButton, '智能清理'),
+      expect(tester.widget<AnimatedByteCount>(amount).bytes, 0);
+      expect(
+        tester
+            .widget<ElevatedButton>(find.widgetWithText(ElevatedButton, '智能清理'))
+            .onPressed,
+        isNull,
       );
-      expect(smart.onPressed, isNotNull);
-      expect(find.text('清理其他所选'), findsNothing);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -306,26 +285,18 @@ void main() {
     }
 
     expectTotal(48 * mb);
-    expectSatellite(CleanCategory.downloads, '0 B');
+    expect(find.byKey(const ValueKey('orbit-downloads')), findsNothing);
+    expectSatellite(CleanCategory.systemCache, '48.0 MB');
     state.toggleCategory(downloads, true);
     await tester.pumpAndSettle();
-    expectTotal(96 * mb);
-    expectSatellite(CleanCategory.downloads, '48.0 MB');
+    expectTotal(48 * mb);
     state.toggleItem(system.items.single);
     await tester.pumpAndSettle();
-    expectTotal(48 * mb);
+    expectTotal(0);
     expectSatellite(CleanCategory.systemCache, '0 B');
     state.toggleCategory(downloads, false);
     await tester.pumpAndSettle();
     expectTotal(0);
-    expectSatellite(CleanCategory.downloads, '0 B');
-    state.toggleItem(downloads.items.single);
-    await tester.pumpAndSettle();
-    expectTotal(48 * mb);
-    expect(
-      find.byTooltip('下载文件夹 · 已选 48.0 MB / 共 48.0 MB，点击查看'),
-      findsOneWidget,
-    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });

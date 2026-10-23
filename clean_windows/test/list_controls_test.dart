@@ -131,7 +131,7 @@ void main() {
         Theme.of(tester.element(firstEntry)).highlightColor,
         Colors.transparent,
       );
-      expect(find.byType(Scrollbar), findsNothing);
+      expect(find.byType(Scrollbar), findsWidgets);
       await tester.ensureVisible(find.text('类别 19').last);
       await tester.pumpAndSettle();
       await tester.tap(find.text('类别 19').last);

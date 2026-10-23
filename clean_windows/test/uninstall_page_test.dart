@@ -176,4 +176,138 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     state.dispose();
   });
+
+  testWidgets('table headers toggle name and size sort', (tester) async {
+    final state = _State();
+    state
+      ..loaded = true
+      ..records.addAll([
+        InstalledApp(
+          displayName: 'Beta Tool',
+          estimatedSizeKb: 1024,
+          uninstallString: 'b.exe',
+        ),
+        InstalledApp(
+          displayName: 'Alpha Tool',
+          estimatedSizeKb: 4096,
+          uninstallString: 'a.exe',
+        ),
+        InstalledApp(
+          displayName: 'Gamma Tool',
+          estimatedSizeKb: 2048,
+          uninstallString: 'g.exe',
+        ),
+      ]);
+    await tester.pumpWidget(app(state, active: false));
+    await tester.pumpAndSettle();
+
+    List<String> rowNames() {
+      const names = ['Alpha Tool', 'Beta Tool', 'Gamma Tool'];
+      final found = <(String, double)>[];
+      for (final name in names) {
+        final f = find.text(name);
+        if (f.evaluate().isNotEmpty) {
+          found.add((name, tester.getTopLeft(f).dy));
+        }
+      }
+      found.sort((a, b) => a.$2.compareTo(b.$2));
+      return found.map((e) => e.$1).toList();
+    }
+
+    // 默认按名称 A→Z
+    expect(rowNames(), ['Alpha Tool', 'Beta Tool', 'Gamma Tool']);
+
+    // 点击「软件」表头 → Z→A
+    await tester.tap(find.text('软件'));
+    await tester.pumpAndSettle();
+    expect(rowNames(), ['Gamma Tool', 'Beta Tool', 'Alpha Tool']);
+
+    // 点击「大小」表头 → 默认大→小
+    await tester.tap(find.text('大小'));
+    await tester.pumpAndSettle();
+    expect(rowNames(), ['Alpha Tool', 'Gamma Tool', 'Beta Tool']);
+
+    // 再点「大小」→ 小→大
+    await tester.tap(find.text('大小'));
+    await tester.pumpAndSettle();
+    expect(rowNames(), ['Beta Tool', 'Gamma Tool', 'Alpha Tool']);
+
+    await tester.pumpWidget(const SizedBox());
+    state.dispose();
+  });
+
+  testWidgets('measured sizes display with estimate marker', (tester) async {
+    final state = _State();
+    final measured = InstalledApp(
+      displayName: 'Measured App',
+      uninstallString: 'm.exe',
+    )..measuredSizeBytes = 3 * 1024 * 1024;
+    final unknown = InstalledApp(
+      displayName: 'Unknown App',
+      uninstallString: 'u.exe',
+    );
+    final registry = InstalledApp(
+      displayName: 'Registry App',
+      estimatedSizeKb: 2048,
+      uninstallString: 'r.exe',
+    );
+    state
+      ..loaded = true
+      ..records.addAll([measured, unknown, registry]);
+    await tester.pumpWidget(app(state, active: false));
+    await tester.pumpAndSettle();
+
+    expect(find.text('2.0 MB'), findsOneWidget); // 注册表
+    expect(find.text('~3.0 MB'), findsOneWidget); // 目录估算
+    expect(find.text('目录估算'), findsOneWidget);
+    // 未知大小的软件显示 —；发布者为空的行也会显示 —
+    expect(find.text('—'), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
+    state.dispose();
+  });
+
+  testWidgets('unknown sizes stay last when sorting by size', (tester) async {
+    final state = _State();
+    state
+      ..loaded = true
+      ..records.addAll([
+        InstalledApp(displayName: 'No Size App', uninstallString: 'n.exe'),
+        InstalledApp(
+          displayName: 'Small App',
+          estimatedSizeKb: 10,
+          uninstallString: 's.exe',
+        ),
+        InstalledApp(
+          displayName: 'Large App',
+          estimatedSizeKb: 10 * 1024,
+          uninstallString: 'l.exe',
+        ),
+      ]);
+    await tester.pumpWidget(app(state, active: false));
+    await tester.pumpAndSettle();
+
+    List<String> rowNames() {
+      const names = ['No Size App', 'Small App', 'Large App'];
+      final found = <(String, double)>[];
+      for (final name in names) {
+        final f = find.text(name);
+        if (f.evaluate().isNotEmpty) {
+          found.add((name, tester.getTopLeft(f).dy));
+        }
+      }
+      found.sort((a, b) => a.$2.compareTo(b.$2));
+      return found.map((e) => e.$1).toList();
+    }
+
+    await tester.tap(find.text('大小'));
+    await tester.pumpAndSettle();
+    expect(rowNames(), ['Large App', 'Small App', 'No Size App']);
+
+    await tester.tap(find.text('大小'));
+    await tester.pumpAndSettle();
+    expect(rowNames(), ['Small App', 'Large App', 'No Size App']);
+
+    await tester.pumpWidget(const SizedBox());
+    state.dispose();
+  });
 }

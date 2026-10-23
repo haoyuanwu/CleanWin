@@ -51,9 +51,35 @@ class _TrendPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round;
     final path = Path();
     Offset? previous;
+    final segment = <Offset>[];
+    void paintArea() {
+      if (segment.length >= 2) {
+        final area = Path()..moveTo(segment.first.dx, size.height);
+        for (final point in segment) {
+          area.lineTo(point.dx, point.dy);
+        }
+        area.lineTo(segment.last.dx, size.height);
+        area.close();
+        canvas.drawPath(
+          area,
+          Paint()
+            ..shader = LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                color.withValues(alpha: .18),
+                color.withValues(alpha: .015),
+              ],
+            ).createShader(Offset.zero & size),
+        );
+      }
+      segment.clear();
+    }
+
     for (var i = 0; i < values.length; i++) {
       final value = values[i];
       if (value == null || !value.isFinite) {
+        paintArea();
         previous = null;
         continue;
       }
@@ -66,8 +92,10 @@ class _TrendPainter extends CustomPainter {
       } else {
         path.lineTo(point.dx, point.dy);
       }
+      segment.add(point);
       previous = point;
     }
+    paintArea();
     canvas.drawPath(path, line);
     if (previous != null) {
       canvas.drawCircle(previous, 3, Paint()..color = color);

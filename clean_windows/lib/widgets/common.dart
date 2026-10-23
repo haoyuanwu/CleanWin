@@ -309,7 +309,8 @@ class SizeText extends StatelessWidget {
           style ??
           TextStyle(
             fontSize: 12,
-            fontWeight: highlight ? FontWeight.w600 : FontWeight.w600,
+            fontWeight: FontWeight.w600,
+            fontFeatures: [FontFeature.tabularFigures()],
             color: highlight ? AppColors.primary : AppColors.textSecondary,
           ),
     );
@@ -359,9 +360,9 @@ class GlassBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: (background ?? color).withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
+        color: (background ?? color).withValues(alpha: 0.055),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.18), width: 1.2),
       ),
       child: Row(
         children: [

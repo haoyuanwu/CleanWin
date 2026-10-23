@@ -6,12 +6,13 @@ import '../models/clean_models.dart';
 import '../services/path_utils.dart';
 
 class CosmicColors {
-  static const background = Color(0xFF070C20);
-  static const panel = Color(0xE6101830);
-  static const line = Color(0xFF263452);
-  static const muted = Color(0xFF9BAECE);
-  static const cyan = Color(0xFF70E5E5);
-  static const violet = Color(0xFFB09BFF);
+  static const background = Color(0xFF101F2B);
+  static const panel = Color(0xED192E3B);
+  static const line = Color(0xFF354C59);
+  static const muted = Color(0xFFA9BDC9);
+  static const cyan = Color(0xFFA6D8D6);
+  static const violet = Color(0xFFADBBD9);
+  static const warning = Color(0xFFDDBB84);
 }
 
 /// Cache categories; selected personal files always require confirmation.
@@ -47,9 +48,9 @@ class _Starfield extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
     for (final cloud in const [
-      (x: .65, y: .25, color: Color(0x384A31A0)),
-      (x: .97, y: .62, color: Color(0x25249AB6)),
-      (x: .07, y: .85, color: Color(0x223B469F)),
+      (x: .65, y: .25, color: Color(0x203E687C)),
+      (x: .97, y: .62, color: Color(0x183A7478)),
+      (x: .07, y: .85, color: Color(0x153C6270)),
     ]) {
       canvas.drawRect(
         rect,
@@ -66,7 +67,7 @@ class _Starfield extends CustomPainter {
       );
     }
     final random = math.Random(82);
-    for (var i = 0; i < 180; i++) {
+    for (var i = 0; i < 100; i++) {
       final point = Offset(
         random.nextDouble() * size.width,
         random.nextDouble() * size.height,
@@ -77,7 +78,7 @@ class _Starfield extends CustomPainter {
         radius,
         Paint()
           ..color = Colors.white.withValues(
-            alpha: random.nextDouble() * .55 + .12,
+            alpha: random.nextDouble() * .35 + .1,
           ),
       );
       if (i % 23 == 0) {
@@ -150,28 +151,28 @@ class _CosmicOrbitState extends State<CosmicOrbit>
       label: '软件',
       icon: Icons.apps_rounded,
       angle: 2.62,
-      color: Color(0xFF91BEFF),
+      color: Color(0xFF9FBBCF),
     ),
     (
       category: CleanCategory.nvidiaCache,
       label: '显卡',
       icon: Icons.bolt_rounded,
       angle: .6,
-      color: Color(0xFFF5C985),
+      color: Color(0xFFDBCAAB),
     ),
     (
       category: CleanCategory.recycleBin,
       label: '回收站',
       icon: Icons.delete_outline_rounded,
       angle: -math.pi / 2,
-      color: Color(0xFF9BD8A7),
+      color: Color(0xFFB2CBB8),
     ),
     (
-      category: CleanCategory.downloads,
-      label: '下载',
-      icon: Icons.download_rounded,
+      category: CleanCategory.systemLogs,
+      label: '日志',
+      icon: Icons.receipt_long_outlined,
       angle: math.pi / 2,
-      color: Color(0xFFFFB7CD),
+      color: Color(0xFFC8BACA),
     ),
   ];
   @override
@@ -257,9 +258,9 @@ class _CosmicOrbitState extends State<CosmicOrbit>
                       gradient: const RadialGradient(
                         center: Alignment(-.5, -.5),
                         colors: [
-                          Color(0xFF3D6592),
-                          Color(0xFF293B7A),
-                          Color(0xFF121936),
+                          Color(0xFF476F80),
+                          Color(0xFF2B4F65),
+                          Color(0xFF152D3E),
                         ],
                       ),
                       border: Border.all(
@@ -313,7 +314,7 @@ class _CosmicOrbitState extends State<CosmicOrbit>
                                 height: 38,
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
-                                  color: const Color(0xFF15223D),
+                                  color: const Color(0xFF203C4C),
                                   border: Border.all(
                                     color: node.color.withValues(
                                       alpha:

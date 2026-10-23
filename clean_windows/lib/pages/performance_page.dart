@@ -1,15 +1,31 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../state/app_state.dart';
+import '../widgets/quick_boost_dialog.dart';
 
 import '../services/performance_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 import '../widgets/page_shell.dart';
-import '../widgets/trend_graph.dart';
+import '../theme/module_theme.dart';
+import '../widgets/runtime_dashboard.dart';
+import '../widgets/monitor_surface.dart';
+
+const _memoryColor = Color(0xFF247870);
+const _cpuColor = Color(0xFF3869B3);
+const _rankColors = [_cpuColor, _memoryColor, Color(0xFF80629D)];
 
 class PerformancePage extends StatefulWidget {
-  const PerformancePage({super.key, this.active = true, this.service});
+  const PerformancePage({
+    super.key,
+    this.active = true,
+    this.service,
+    this.processesOnly = false,
+  });
+  final bool processesOnly;
   final bool active;
   final PerformanceService? service;
   @override
@@ -27,13 +43,16 @@ class _PerformancePageState extends State<PerformancePage>
   bool _paused = false;
   String? _error;
   String _query = '';
+  int? _focusedPid;
   Timer? _timer;
   bool get _active => widget.active && _foreground && !_paused;
 
   @override
   void initState() {
     super.initState();
-    _service = widget.service ?? PerformanceService();
+    _service =
+        widget.service ??
+        PerformanceService(includeProcesses: widget.processesOnly);
     WidgetsBinding.instance.addObserver(this);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _foreground =
@@ -112,77 +131,105 @@ class _PerformancePageState extends State<PerformancePage>
         s?.topProcesses
             .where(
               (process) =>
-                  query.isEmpty ||
-                  process.name.toLowerCase().contains(query) ||
-                  process.pid.toString().contains(query),
+                  (_focusedPid == null || process.pid == _focusedPid) &&
+                  (query.isEmpty ||
+                      process.name.toLowerCase().contains(query) ||
+                      process.pid.toString().contains(query)),
             )
             .toList() ??
         <ProcUsage>[];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '运行监控',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.processesOnly ? '进程管理' : '运行监控',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _paused
+                        ? '已暂停自动刷新 · 当前保留最近数据'
+                        : s == null
+                        ? (widget.processesOnly
+                              ? '每秒自动刷新 · 按内存占用排序'
+                              : '每秒采样 · 最近 60 次趋势')
+                        : '每秒自动刷新 · 更新于 ${_time(s.collectedAt)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: widget.processesOnly
+                          ? AppColors.textSecondary
+                          : monitorMuted,
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _paused
-                          ? '已暂停自动刷新 · 当前保留最近数据'
-                          : s == null
-                          ? '每秒自动刷新 · 按内存占用排序'
-                          : '每秒自动刷新 · 更新于 ${_time(s.collectedAt)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 8),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              height: 42,
+              child: FilledButton.tonalIcon(
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                ),
+                onPressed: _acting
+                    ? null
+                    : () {
+                        setState(() => _paused = !_paused);
+                        _syncPolling();
+                      },
+                icon: Icon(
+                  _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                  size: 18,
+                ),
+                label: Text(_paused ? '继续刷新' : '暂停刷新'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox.square(
+              dimension: 42,
+              child: IconButton.outlined(
+                tooltip: '刷新',
+                onPressed: _loading || _acting || _paused ? null : _refresh,
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (!widget.processesOnly)
               SizedBox(
                 height: 42,
-                child: OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                  ),
+                child: FilledButton.icon(
                   onPressed: _acting
                       ? null
-                      : () {
-                          setState(() => _paused = !_paused);
-                          _syncPolling();
+                      : () async {
+                          setState(() => _acting = true);
+                          try {
+                            await showDialog<void>(
+                              context: context,
+                              barrierDismissible: false,
+                              builder: (_) => QuickBoostDialog(
+                                state: context.read<AppState>(),
+                              ),
+                            );
+                          } finally {
+                            if (mounted) {
+                              setState(() => _acting = false);
+                              unawaited(_refresh());
+                            }
+                          }
                         },
-                  icon: Icon(
-                    _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
-                    size: 18,
-                  ),
-                  label: Text(_paused ? '继续刷新' : '暂停刷新'),
+                  icon: const Icon(Icons.bolt_rounded, size: 18),
+                  label: const Text('立即加速'),
                 ),
-              ),
-              const SizedBox(width: 8),
-              SizedBox.square(
-                dimension: 42,
-                child: IconButton.outlined(
-                  tooltip: '刷新',
-                  onPressed: _loading || _acting || _paused ? null : _refresh,
-                  icon: const Icon(Icons.refresh_rounded, size: 18),
-                ),
-              ),
-              const SizedBox(width: 8),
+              )
+            else
               Tooltip(
                 message: '整理本程序内存，不关闭其他软件',
                 child: SizedBox.square(
@@ -193,82 +240,44 @@ class _PerformancePageState extends State<PerformancePage>
                   ),
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (s == null)
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (s == null)
+          Expanded(
+            child: Center(
+              child: _error == null
+                  ? (_active
+                        ? const CircularProgressIndicator()
+                        : const Text('打开页面后更新运行状态'))
+                  : Text(
+                      _error!,
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+            ),
+          )
+        else ...[
+          if (_error != null)
+            GlassBanner(
+              icon: Icons.sync_problem_rounded,
+              text: '$_error，当前显示上次成功读取的数据。',
+              color: AppColors.warning,
+            )
+          else if (widget.processesOnly)
+            _AlertBar(snapshot: s),
+          if (!widget.processesOnly)
             Expanded(
-              child: Center(
-                child: _error == null
-                    ? (_active
-                          ? const CircularProgressIndicator()
-                          : const Text('打开页面后更新运行状态'))
-                    : Text(
-                        _error!,
-                        style: const TextStyle(color: AppColors.textSecondary),
-                      ),
-              ),
+              child: RuntimeDashboard(snapshot: s, history: _history),
             )
           else ...[
-            if (_error != null)
-              GlassBanner(
-                icon: Icons.sync_problem_rounded,
-                text: '$_error，当前显示上次成功读取的数据。',
-                color: AppColors.warning,
-              )
-            else
-              _AlertBar(snapshot: s),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: _MetricCard(
-                    label: '内存占用',
-                    value: '${s.memoryUsedPercent.toStringAsFixed(1)}%',
-                    icon: Icons.memory_rounded,
-                    color: s.memHigh ? AppColors.warning : AppColors.primary,
-                    bar: s.memoryUsedPercent / 100,
-                    history: _history
-                        .map((sample) => sample.memoryUsedPercent)
-                        .toList(),
-                    hint: s.totalMemoryMb > 0
-                        ? '${_memory(s.usedMemoryMb)} / ${_memory(s.totalMemoryMb)}'
-                        : '系统物理内存',
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _MetricCard(
-                    label: 'CPU 占用',
-                    value: '${s.cpuPercent.toStringAsFixed(1)}%',
-                    icon: Icons.speed_rounded,
-                    color: s.cpuHigh ? AppColors.warning : AppColors.primary,
-                    bar: s.cpuPercent / 100,
-                    history: _history
-                        .map((sample) => sample.cpuPercent)
-                        .toList(),
-                    hint: s.cpuHigh ? '占用偏高' : '系统整体占用',
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _MetricCard(
-                    label: '温度参考',
-                    value: s.cpuTempC == null
-                        ? '—'
-                        : '${s.cpuTempC!.toStringAsFixed(0)}°C',
-                    icon: Icons.thermostat_rounded,
-                    color: s.tempWarn ? AppColors.warning : AppColors.success,
-                    bar: s.cpuTempC == null
-                        ? 0
-                        : (s.cpuTempC! / 110).clamp(0, 1),
-                    hint: s.tempStatus,
-                    history: _history.map((sample) => sample.cpuTempC).toList(),
-                  ),
-                ),
-              ],
+            const SizedBox(height: 10),
+            _MemoryOverview(
+              snapshot: s,
+              selectedPid: _focusedPid,
+              onSelect: (pid) =>
+                  setState(() => _focusedPid = _focusedPid == pid ? null : pid),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Row(
               children: [
                 Expanded(
@@ -294,6 +303,12 @@ class _PerformancePageState extends State<PerformancePage>
                     ],
                   ),
                 ),
+                if (_focusedPid != null)
+                  TextButton.icon(
+                    onPressed: () => setState(() => _focusedPid = null),
+                    icon: const Icon(Icons.filter_alt_off_outlined, size: 16),
+                    label: const Text('全部进程'),
+                  ),
                 ModuleSearchField(
                   fieldKey: const ValueKey('process-search'),
                   hint: '搜索进程名称或 PID',
@@ -320,7 +335,7 @@ class _PerformancePageState extends State<PerformancePage>
                             child: Text(
                               '进程名称',
                               style: TextStyle(
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: AppColors.textSecondary,
                               ),
                             ),
@@ -333,7 +348,7 @@ class _PerformancePageState extends State<PerformancePage>
                                 Text(
                                   '内存占用',
                                   style: TextStyle(
-                                    fontSize: 11,
+                                    fontSize: 12,
                                     color: AppColors.primary,
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -362,33 +377,37 @@ class _PerformancePageState extends State<PerformancePage>
                                 ),
                               ),
                             )
-                          : ListView.builder(
-                              key: const PageStorageKey(
-                                'performance-process-list',
+                          : ScrollConfiguration(
+                              behavior: const CleanScrollBehavior(),
+                              child: ListView.builder(
+                                padding: const EdgeInsets.only(right: 12),
+                                key: const PageStorageKey(
+                                  'performance-process-list',
+                                ),
+                                itemExtent: 50,
+                                itemCount: processes.length,
+                                itemBuilder: (context, index) {
+                                  final process = processes[index];
+                                  final highest = s.topProcesses.isEmpty
+                                      ? 0.0
+                                      : s.topProcesses.first.memoryMb;
+                                  return _ProcessRow(
+                                    key: ValueKey('process-${process.pid}'),
+                                    process: process,
+                                    memory: _memory(process.memoryMb),
+                                    rank: index + 1,
+                                    fraction: highest <= 0
+                                        ? 0
+                                        : (process.memoryMb / highest).clamp(
+                                            0,
+                                            1,
+                                          ),
+                                    onEnd: _acting || !process.canTerminate
+                                        ? null
+                                        : () => _confirmKill(process),
+                                  );
+                                },
                               ),
-                              itemExtent: 50,
-                              itemCount: processes.length,
-                              itemBuilder: (context, index) {
-                                final process = processes[index];
-                                final highest = s.topProcesses.isEmpty
-                                    ? 0.0
-                                    : s.topProcesses.first.memoryMb;
-                                return _ProcessRow(
-                                  key: ValueKey('process-${process.pid}'),
-                                  process: process,
-                                  memory: _memory(process.memoryMb),
-                                  rank: index + 1,
-                                  fraction: highest <= 0
-                                      ? 0
-                                      : (process.memoryMb / highest).clamp(
-                                          0,
-                                          1,
-                                        ),
-                                  onEnd: _acting || !process.canTerminate
-                                      ? null
-                                      : () => _confirmKill(process),
-                                );
-                              },
                             ),
                     ),
                   ],
@@ -397,7 +416,16 @@ class _PerformancePageState extends State<PerformancePage>
             ),
           ],
         ],
-      ),
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+      child: widget.processesOnly
+          ? content
+          : MonitorSurface(
+              key: const ValueKey('runtime-monitor-surface'),
+              child: Padding(padding: const EdgeInsets.all(20), child: content),
+            ),
     );
   }
 
@@ -479,101 +507,108 @@ class _ProcessRow extends StatelessWidget {
   final double fraction;
   final VoidCallback? onEnd;
   @override
-  Widget build(BuildContext context) => Container(
-    decoration: const BoxDecoration(
-      border: Border(bottom: BorderSide(color: AppColors.border, width: 0.5)),
-    ),
-    padding: const EdgeInsets.symmetric(horizontal: 16),
-    child: Row(
-      children: [
-        SizedBox(
-          width: 24,
-          child: Text(
-            '$rank',
-            style: const TextStyle(fontSize: 11, color: AppColors.textTertiary),
-          ),
-        ),
-        Container(
-          width: 26,
-          height: 26,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: AppColors.primarySoft.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            process.name.isEmpty
-                ? '?'
-                : process.name.characters.first.toUpperCase(),
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              color: AppColors.primary,
+  Widget build(BuildContext context) => InteractiveSurface(
+    child: Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppColors.border, width: 0.5)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 24,
+            child: Text(
+              '$rank',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textTertiary,
+              ),
             ),
           ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Tooltip(
-                message: process.name,
-                child: Text(
-                  process.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+          Container(
+            width: 26,
+            height: 26,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.primarySoft.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              process.name.isEmpty
+                  ? '?'
+                  : process.name.characters.first.toUpperCase(),
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                color: AppColors.primary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Tooltip(
+                  message: process.name,
+                  child: Text(
+                    process.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  'PID ${process.pid}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: AppColors.textTertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 116,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  memory,
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
                   ),
                 ),
-              ),
-              const SizedBox(height: 1),
-              Text(
-                'PID ${process.pid}',
-                style: const TextStyle(
-                  fontSize: 10,
-                  color: AppColors.textTertiary,
+                const SizedBox(height: 4),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: fraction,
+                    minHeight: 3,
+                    color: AppColors.primary.withValues(alpha: 0.65),
+                    backgroundColor: AppColors.primarySoft.withValues(
+                      alpha: 0.5,
+                    ),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        SizedBox(
-          width: 116,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                memory,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 4),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(2),
-                child: LinearProgressIndicator(
-                  value: fraction,
-                  minHeight: 3,
-                  color: AppColors.primary.withValues(alpha: 0.65),
-                  backgroundColor: AppColors.primarySoft.withValues(alpha: 0.5),
-                ),
-              ),
-            ],
+          const SizedBox(width: 14),
+          TextButton(
+            onPressed: onEnd,
+            child: const Text('结束', style: TextStyle(fontSize: 12)),
           ),
-        ),
-        const SizedBox(width: 14),
-        TextButton(
-          onPressed: onEnd,
-          child: const Text('结束', style: TextStyle(fontSize: 12)),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -585,11 +620,11 @@ class _AlertBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final warning = snapshot.cpuHigh || snapshot.memHigh || snapshot.tempWarn;
     final message = snapshot.memHigh
-        ? '内存占用较高，可查看下方占用最多的进程。'
+        ? '内存占用较高，可在进程管理中查看占用最多的进程。'
         : snapshot.cpuHigh
         ? 'CPU 占用较高，请留意后台运行的软件。'
         : snapshot.tempWarn
-        ? '系统温度偏高，建议检查散热情况。'
+        ? 'CPU 温度偏高，建议检查散热情况。'
         : snapshot.cpuTempC == null
         ? 'CPU 与内存暂未发现高占用，温度传感器暂不可用。'
         : 'CPU 与内存暂未发现高占用。';
@@ -611,7 +646,7 @@ class _AlertBar extends StatelessWidget {
           ),
           const SizedBox(width: 7),
           Expanded(
-            child: Text(message, style: TextStyle(fontSize: 11, color: color)),
+            child: Text(message, style: TextStyle(fontSize: 12, color: color)),
           ),
         ],
       ),
@@ -619,88 +654,139 @@ class _AlertBar extends StatelessWidget {
   }
 }
 
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({
-    required this.label,
-    required this.value,
-    required this.icon,
-    required this.color,
-    required this.bar,
-    required this.hint,
-    required this.history,
+class _MemoryOverview extends StatelessWidget {
+  const _MemoryOverview({
+    required this.snapshot,
+    required this.onSelect,
+    this.selectedPid,
   });
-
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color color;
-  final double bar;
-  final String hint;
-  final List<double?> history;
-
+  final RuntimeSnapshot snapshot;
+  final int? selectedPid;
+  final ValueChanged<int> onSelect;
   @override
   Widget build(BuildContext context) {
+    final total = snapshot.totalMemoryMb;
+    final used = snapshot.usedMemoryMb.clamp(0, total);
+    final top = snapshot.topProcesses.take(3).toList();
     return Card(
-      margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final memory = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, color: color, size: 15),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textSecondary,
+                Row(
+                  children: [
+                    const Text(
+                      '物理内存',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary,
+                      ),
                     ),
-                  ),
+                    const Spacer(),
+                    Text(
+                      '可用 ${((total - used) / 1024).toStringAsFixed(1)} GB',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  value,
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600,
-                    color: color,
-                    height: 1.1,
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: total <= 0 ? null : used / total,
+                    minHeight: 7,
+                    color: snapshot.memHigh
+                        ? AppColors.warning
+                        : AppColors.primary,
+                    backgroundColor: AppColors.primarySoft,
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 6),
-            TrendGraph(values: history, color: color, height: 24),
-            const SizedBox(height: 4),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: bar.clamp(0, 1),
-                minHeight: 3,
-                backgroundColor: color.withValues(alpha: 0.12),
-                color: color,
-              ),
-            ),
-            const SizedBox(height: 5),
-            Tooltip(
-              message: hint,
-              child: Text(
-                hint,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textTertiary,
-                ),
-              ),
-            ),
-          ],
+            );
+            final processes = Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (var i = 0; i < top.length; i++)
+                  Tooltip(
+                    message:
+                        '${top[i].name} · ${top[i].memoryMb.toStringAsFixed(0)} MB 工作集（含共享内存），点击筛选',
+                    child: TextButton(
+                      key: ValueKey('process-focus-${top[i].pid}'),
+                      onPressed: () => onSelect(top[i].pid),
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 30),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        foregroundColor: _rankColors[i],
+                        backgroundColor: _rankColors[i].withValues(
+                          alpha: selectedPid == top[i].pid ? .16 : .065,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 18,
+                            child: Text(
+                              '${i + 1}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 92),
+                            child: Text(
+                              top[i].name,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 25,
+                            child: LinearProgressIndicator(
+                              value: top.first.memoryMb <= 0
+                                  ? 0
+                                  : (top[i].memoryMb / top.first.memoryMb)
+                                        .clamp(0, 1),
+                              minHeight: 3,
+                              color: _rankColors[i],
+                              backgroundColor: _rankColors[i].withValues(
+                                alpha: .12,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            );
+            if (constraints.maxWidth < 700) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [memory, const SizedBox(height: 8), processes],
+              );
+            }
+            return Row(
+              children: [
+                SizedBox(width: 200, child: memory),
+                const SizedBox(width: 20),
+                Expanded(child: processes),
+              ],
+            );
+          },
         ),
       ),
     );

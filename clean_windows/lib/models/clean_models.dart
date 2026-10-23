@@ -1,13 +1,13 @@
 /// 清理分类
 enum CleanCategory {
-  systemCache('系统缓存', '用户临时文件与重建类缓存（后者需手动选择）', 'assets/icons/system.svg'),
+  systemCache('系统缓存', '用户临时文件与可重建缓存', 'assets/icons/system.svg'),
   browserCache(
     '浏览器缓存',
     'Chrome / Edge / Firefox 缓存',
     'assets/icons/browser.svg',
   ),
-  appCache('软件缓存', '已安装软件在 AppData 中的缓存', 'assets/icons/system.svg'),
-  systemLogs('系统日志', '日志文件、错误报告、更新缓存', 'assets/icons/logs.svg'),
+  appCache('软件缓存', '软件资源缓存与临时数据', 'assets/icons/system.svg'),
+  systemLogs('系统日志', 'Windows 与软件的诊断日志、错误报告', 'assets/icons/logs.svg'),
   recycleBin('回收站', '清空回收站中的文件', 'assets/icons/recycle.svg'),
   nvidiaCache('显卡缓存', 'DirectX、NVIDIA、AMD 着色器缓存', 'assets/icons/gpu.svg'),
   appLeftovers('应用残留', '安装目录中的空目录（需手动确认）', 'assets/icons/leftover.svg'),
@@ -28,16 +28,31 @@ enum CleanCategory {
   final String subtitle;
   final String icon;
 
-  /// Only the system temporary-file category has any automatic selections;
-  /// the scanner further restricts it to aged, operable temporary-file items.
-  bool get defaultSelected => this == CleanCategory.systemCache;
+  /// Overview cleanup selects discovered junk by default except GPU caches.
+  /// Personal files and specialist maintenance remain independently reviewed.
+  bool get defaultSelected => switch (this) {
+    CleanCategory.systemCache ||
+    CleanCategory.browserCache ||
+    CleanCategory.appCache ||
+    CleanCategory.systemLogs ||
+    CleanCategory.recycleBin ||
+    CleanCategory.windowsUpdate ||
+    CleanCategory.usageTraces ||
+    CleanCategory.softwareUsage => true,
+    CleanCategory.nvidiaCache ||
+    CleanCategory.downloads ||
+    CleanCategory.appLeftovers ||
+    CleanCategory.registryJunk ||
+    CleanCategory.memoryDumps => false,
+  };
 
   /// 是否需要管理员权限
   bool get needsAdmin =>
       this == CleanCategory.windowsUpdate || this == CleanCategory.systemLogs;
 }
 
-/// Personal downloads and recycle-bin contents are reviewed manually.
+/// Overview scan scope. Downloads remain owned by the separate review page;
+/// recycle-bin contents are measured here and still require final confirmation.
 const oneClickScanCategories = {
   CleanCategory.nvidiaCache,
   CleanCategory.systemCache,
@@ -47,7 +62,26 @@ const oneClickScanCategories = {
   CleanCategory.downloads,
 };
 
+/// Extended review shares snapshots, whitelist and deletion with daily scans.
+const spaceCleanupScanCategories = {
+  CleanCategory.nvidiaCache,
+  CleanCategory.systemCache,
+  CleanCategory.browserCache,
+  CleanCategory.appCache,
+  CleanCategory.recycleBin,
+  CleanCategory.systemLogs,
+  CleanCategory.usageTraces,
+};
+
+bool isSpaceCleanupScope(Set<CleanCategory>? categories) =>
+    categories != null &&
+    categories.length == spaceCleanupScanCategories.length &&
+    categories.containsAll(spaceCleanupScanCategories);
+
 bool automaticallySelectCleanupItem(CleanCategory category, String id) =>
+    category.defaultSelected;
+
+bool isConservativeTemporaryItem(CleanCategory category, String id) =>
     category == CleanCategory.systemCache &&
     (id == 'user_temp' || id.startsWith('temp_'));
 
@@ -75,8 +109,16 @@ class CleanItem {
     this.registryExecutable,
     this.requiredKeeperPath,
     this.requiredKeeperSignature,
+    this.blockedSizeBytes = 0,
+    this.blockedFileCount = 0,
+    this.blockedFiles = const [],
   });
 
+  final int blockedSizeBytes, blockedFileCount;
+  final List<String> blockedFiles;
+  int get detectedSizeBytes => sizeBytes + blockedSizeBytes;
+  bool get hasCleanableFiles =>
+      scannedFiles == null || scannedFiles!.isNotEmpty || removeEmptyDirectory;
   final String id;
   final String name;
   final String path;
@@ -123,6 +165,9 @@ class CleanItem {
     CleanCategory.nvidiaCache => '着色器缓存；清理后游戏或图形软件可能重新编译并暂时卡顿，默认不勾选。',
     CleanCategory.downloads => '个人文件，默认不勾选；所选文件移入回收站，可在回收站恢复。',
     CleanCategory.recycleBin => '清空后无法从回收站恢复，请先检查其中内容。',
+    CleanCategory.systemLogs => '仅旧诊断日志；清理会失去相关排障记录，不处理事件日志数据库和系统组件。',
+    CleanCategory.memoryDumps => '内存转储不纳入概览清理。',
+    CleanCategory.usageTraces => '最近文件和跳转列表；原文件不变，但固定的快捷入口也可能消失。',
     _ => category.subtitle,
   };
 }
@@ -134,14 +179,27 @@ class ScanCategory {
     required this.items,
     required this.scanDuration,
     this.error,
+    this.unreadableCount = 0,
+    this.blockedFileCount = 0,
+    this.inUsePaths = const [],
   });
 
   final CleanCategory category;
   final List<CleanItem> items;
   final Duration scanDuration;
   final String? error;
+  final int unreadableCount;
+  final int blockedFileCount;
+  final List<String> inUsePaths;
 
-  int get totalSizeBytes => items.fold(0, (sum, item) => sum + item.sizeBytes);
+  String get diagnosticLabel => unreadableCount > 0
+      ? '$unreadableCount 个位置未完整读取'
+      : blockedFileCount > 0
+      ? '$blockedFileCount 个文件暂不可清理'
+      : '扫描提示';
+
+  int get totalSizeBytes =>
+      items.fold(0, (sum, item) => sum + item.detectedSizeBytes);
 
   int get selectedSizeBytes => items
       .where((i) => i.selected)
@@ -153,7 +211,7 @@ class ScanCategory {
 
   void selectAll(bool selected) {
     for (final item in items) {
-      item.selected = selected;
+      item.selected = selected && item.hasCleanableFiles;
     }
   }
 }

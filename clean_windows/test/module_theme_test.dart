@@ -23,7 +23,7 @@ void main() {
                   expect(style.backgroundColor!.resolve({}), color);
                   expect(
                     style.elevation!.resolve({WidgetState.hovered}),
-                    greaterThan(style.elevation!.resolve({})!),
+                    style.elevation!.resolve({}),
                   );
                   expect(
                     style.elevation!.resolve({
@@ -63,7 +63,7 @@ void main() {
     },
   );
 
-  testWidgets('desktop lists and menus retain scrolling without scrollbars', (
+  testWidgets('desktop lists expose scrollbars and retain scrolling', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -80,12 +80,12 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(Scrollbar), findsNothing);
+    expect(find.byType(Scrollbar), findsWidgets);
     expect(find.text('第 0 项').hitTestable(), findsOneWidget);
     await tester.drag(find.byType(ListView), const Offset(0, -400));
     await tester.pumpAndSettle();
     expect(find.text('第 0 项').hitTestable(), findsNothing);
-    expect(find.byType(Scrollbar), findsNothing);
+    expect(find.byType(Scrollbar), findsWidgets);
   });
 
   testWidgets('reduced motion disables decorative button transitions', (
@@ -118,4 +118,54 @@ void main() {
       ),
     );
   });
+  testWidgets(
+    'overview can hide its scrollbar while two module lists scroll independently',
+    (tester) async {
+      Widget list(String prefix) => ListView.builder(
+        itemCount: 100,
+        itemExtent: 48,
+        itemBuilder: (_, index) => Text('$prefix $index'),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          scrollBehavior: const CleanScrollBehavior(),
+          home: Scaffold(
+            body: ModuleSurface(
+              index: 4,
+              child: Row(
+                children: [
+                  Expanded(child: list('left')),
+                  Expanded(child: list('right')),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(Scrollbar), findsNWidgets(2));
+      await tester.drag(find.byType(ListView).first, const Offset(0, -400));
+      await tester.pumpAndSettle();
+      expect(find.text('left 0').hitTestable(), findsNothing);
+      expect(find.text('right 0').hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(
+        MaterialApp(
+          scrollBehavior: const CleanScrollBehavior(),
+          home: Scaffold(
+            body: ScrollConfiguration(
+              behavior: const CleanScrollBehavior(showScrollbars: false),
+              child: list('home'),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(Scrollbar), findsNothing);
+      await tester.drag(find.byType(ListView), const Offset(0, -400));
+      await tester.pumpAndSettle();
+      expect(find.text('home 0').hitTestable(), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

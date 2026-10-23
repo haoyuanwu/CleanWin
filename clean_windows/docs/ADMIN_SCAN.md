@@ -1,20 +1,35 @@
-# 管理员扫描
+# 安装与运行权限
 
-一键清理工具栏的“管理员扫描”由用户主动触发。确认后使用 Windows
-ShellExecuteExW 的 runas 请求 UAC，仅启动当前程序，不修改目录访问权限。
-授权后的窗口进入一键清理并强制重新扫描，保留原有设置和白名单，不自动清理。
-软件平时仍以普通权限启动；若已是管理员则直接重新扫描。
+CleanWin 整个应用要求管理员身份，安装与卸载也使用管理员权限。未同意 Windows UAC 授权时不启动程序，不降低权限继续扫描。
 
-原窗口在新进程完成第一帧且显示主窗口后才退出。取消 UAC、启动失败或等待
-30 秒仍未就绪时，保留原窗口和扫描结果。等待超时不会终止可能仍在启动的新进程。
-为避免授权时切换账户误扫其他用户的数据，原生启动参数携带当前用户 SID，
-新进程在创建窗口前校验管理员状态与 SID；其他账户的授权会被拒绝。
-因此，当前账户必须具备可通过 UAC 提升的管理员身份；普通账户使用另一管理员
-凭据的场景暂不支持。
+## 实现
 
-管理员权限不会自动解除文件占用、加密或系统特殊保护，无法访问的位置仍跳过。
-授权后的整个应用保持管理员身份，关闭后普通启动恢复普通权限。
+- `windows/runner/runner.exe.manifest` 嵌入 `requireAdministrator`、`uiAccess=false`，覆盖 Debug / Profile / Release；快捷方式和直接打开 EXE 都遵循该清单。
+- `main.cpp` 在创建 Flutter 引擎和窗口之前检查实际进程令牌，未提升则提示并退出，防止清单失效后以普通身份扫描。
+- 原有显式管理员扫描参数仍校验用户 SID，不允许静默切换到其他账号的目录。
+- `packaging/windows/cleanwin.iss` 使用 `PrivilegesRequired=admin`，不提供按用户安装的降权选项；安装到 Program Files，卸载器继承管理员要求。
+- 安装完成启动使用 `runascurrentuser`，继承安装器的管理员令牌。
+- `run.ps1` 要求管理员终端；Flutter Manager 调试也应以管理员身份启动，否则 CreateProcess 可能返回 740（需要提升）。
 
-自动化测试模拟通道，覆盖取消、等待就绪、启动失败、超时和已提升状态，
-不触发真实 UAC。原生代码单独编译检查，未在测试中重启正在使用的程序。
-Windows 上的真实 UAC 与不同账号拒绝流程仍需交互验收。
+## 构建和打包
+
+1. 通过 Flutter Manager 构建 Windows Release。
+2. 安装 Inno Setup 6.3+ 后，执行 `powershell -File scripts/package-windows.ps1`。
+3. 打包脚本先以只读资源方式检查 EXE 的嵌入式管理员清单，再编译安装包至 `dist`。可用 `-IsccPath` 指定编译器。
+4. 单独检查已有构建：`powershell -File scripts/Test-AdminManifest.ps1 -ExecutablePath build/windows/x64/runner/Release/clean_windows.exe`。
+
+安装一次不等于永久跳过 UAC。以后从普通桌面启动时仍由 Windows 请求管理员授权；从已提升的进程启动则可继承权限。标准用户输入另一管理员的凭据会更换运行账户，扫描用户目录也随之变化；应使用需要清理的当前管理员账户确认授权。
+
+管理员权限只改善权限不足导致的读取失败，不能保证读取占用、加密、离线或特别保护的文件。本变更不修改文件 ACL、不取得系统目录所有权、不停用防护、不强行解除占用，也不扩大默认清理选择范围。
+
+参考：[Windows 管理员清单](https://learn.microsoft.com/en-us/windows/win32/secbp/running-with-administrator-privileges)、[Inno Setup 权限配置](https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm)。
+
+
+## 本机验证（2026-10-22）
+
+- Windows Release 已通过 Flutter Manager 构建，真实 `clean_windows.exe` 的嵌入式清单校验通过。
+- 新版运行进程的 Windows `TokenElevation` 已只读核实为已提升（管理员身份）。
+- 使用本机 `C:\Program Files\Inno Setup 7\ISCC.exe`（7.1.0）成功生成 `dist/CleanWin-1.0.0-windows-x64-setup.exe`。
+- 安装包已生成，未执行安装向导，也未修改系统安装登记。
+- 注意：Inno Setup 的外层引导程序使用 `asInvoker` 清单，随后依据 `PrivilegesRequired=admin` 提升实际安装进程，这是编译器的正常设计。`Test-AdminManifest.ps1` 只验证 CleanWin 应用 EXE，不能用来验证 Inno 外层引导程序。参考：[Inno Setup 安全机制](https://jrsoftware.org/is6help/topic_securitymeasures.htm)。
+- PowerShell 打包脚本和验证脚本语法检查通过；打包前已验证完整 Release 资源并拒绝普通权限旧构建。

@@ -1,13 +1,20 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:provider/provider.dart';
 
+import 'models/workspace_structure.dart';
 import 'pages/clean_page.dart';
+import 'pages/app_leftovers_page.dart';
+import 'pages/health_check_page.dart';
+import 'widgets/workspace_tabs.dart';
 import 'pages/disk_pages.dart';
 import 'pages/downloads_page.dart';
 import 'pages/performance_page.dart';
+import 'pages/hardware_dashboard_page.dart';
+import 'pages/windows_settings_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/startup_registry_pages.dart';
 import 'pages/uninstall_page.dart';
@@ -16,7 +23,6 @@ import 'services/window_controls.dart';
 import 'state/app_state.dart';
 import 'theme/app_theme.dart';
 import 'theme/module_theme.dart';
-import 'widgets/activity_center.dart';
 
 class CleanWindowsApp extends StatelessWidget {
   const CleanWindowsApp({super.key, this.initialIndex = 0});
@@ -47,8 +53,30 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
-  // Keep legacy index 1 as an alias for the merged workspace.
-  late int _index = widget.initialIndex == 1 ? 0 : widget.initialIndex;
+  late int _index = workspaceRoute(widget.initialIndex);
+  late int _fileTab = _index == 2 ? workspaceTab(widget.initialIndex) : 0;
+  late int _systemTab = _index == 4 ? workspaceTab(widget.initialIndex) : 0;
+  late int _appTab = _index == 5 ? workspaceTab(widget.initialIndex) : 0;
+  late int _maintenanceTab = _index == 7
+      ? workspaceTab(widget.initialIndex)
+      : 0;
+
+  void _navigate(int route) => setState(() {
+    _index = workspaceRoute(route);
+    // Clicking the workspace itself preserves its current tab.
+    if (route != _index) {
+      switch (_index) {
+        case 2:
+          _fileTab = workspaceTab(route);
+        case 4:
+          _systemTab = workspaceTab(route);
+        case 5:
+          _appTab = workspaceTab(route);
+        case 7:
+          _maintenanceTab = workspaceTab(route);
+      }
+    }
+  });
 
   @override
   void initState() {
@@ -56,15 +84,25 @@ class _AppShellState extends State<AppShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final state = context.read<AppState>();
+      // Local inspection is silent and does not depend on cleanup preferences.
+      unawaited(_readStartupSystemInfo(state));
       if (!state.consumeStartupScanRequest()) return;
       setState(() => _index = 0);
       unawaited(_runStartupScan(state));
     });
   }
 
+  Future<void> _readStartupSystemInfo(AppState state) async {
+    try {
+      await state.healthChecks.readOnStartup();
+    } catch (_) {
+      // Keep startup quiet. The feature pages retain partial results and refresh.
+    }
+  }
+
   Future<void> _runStartupScan(AppState state) async {
     try {
-      await state.scan(force: true);
+      await state.scanOverview();
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -76,44 +114,125 @@ class _AppShellState extends State<AppShell> {
   static const _titles = [
     '概览与清理',
     '', // Reserved legacy index; no second navigation entry.
-    '磁盘分析',
+    '文件管理',
     '大文件',
-    '运行监控',
-    '软件卸载',
+    '系统监控',
+    '应用管理',
     '启动项',
-    '注册表',
+    '系统维护',
     '下载管理',
     '白名单',
     '设置',
+    '全面体检',
   ];
   static const _icons = [
     Icons.dashboard_rounded,
     Icons.cleaning_services_rounded,
-    Icons.donut_small_rounded,
+    Icons.folder_open_rounded,
     Icons.file_copy_rounded,
-    Icons.speed_rounded,
-    Icons.delete_sweep_rounded,
+    Icons.monitor_heart_outlined,
+    Icons.apps_rounded,
     Icons.rocket_launch_rounded,
-    Icons.health_and_safety_rounded,
+    Icons.build_outlined,
     Icons.download_rounded,
     Icons.verified_user_outlined,
     Icons.settings_rounded,
+    Icons.fact_check_outlined,
   ];
 
   @override
   Widget build(BuildContext context) {
+    final state = context.read<AppState>();
+    HealthCheckPage inspection(String id, String title) => HealthCheckPage(
+      key: ValueKey('system-inspection-$id'),
+      controller: state.healthChecks,
+      sectionIds: {id},
+      title: title,
+      onNavigate: _navigate,
+      onScanTraces: () async => false,
+    );
     final pages = [
-      TickerMode(enabled: _index == 0, child: const CleanPage()),
+      TickerMode(
+        enabled: _index == 0,
+        child: CleanPage(onNavigate: _navigate),
+      ),
       const SizedBox.shrink(),
-      ModuleSurface(index: 2, child: DiskAnalysisPage(active: _index == 2)),
-      const ModuleSurface(index: 3, child: LargeFilesPage()),
-      ModuleSurface(index: 4, child: PerformancePage(active: _index == 4)),
-      ModuleSurface(index: 5, child: UninstallPage(active: _index == 5)),
-      ModuleSurface(index: 6, child: StartupPage(active: _index == 6)),
-      const ModuleSurface(index: 7, child: RegistryCleanPage()),
-      const ModuleSurface(index: 8, child: DownloadsPage()),
+      ModuleSurface(
+        index: 2,
+        child: WorkspaceTabs(
+          active: _index == 2,
+          index: _fileTab,
+          onChanged: (i) => setState(() => _fileTab = i),
+          tabs: const [
+            (label: '磁盘分析', icon: Icons.donut_small_rounded),
+            (label: '大文件', icon: Icons.file_copy_outlined),
+            (label: '下载审查', icon: Icons.download_outlined),
+          ],
+          builder: (i, active) => switch (i) {
+            0 => DiskAnalysisPage(active: active),
+            1 => const LargeFilesPage(),
+            _ => const DownloadsPage(),
+          },
+        ),
+      ),
+      const SizedBox.shrink(),
+      ModuleSurface(
+        index: 4,
+        child: WorkspaceTabs(
+          active: _index == 4,
+          index: _systemTab,
+          onChanged: (i) => setState(() => _systemTab = i),
+          tabs: const [
+            (label: '运行监控', icon: Icons.speed_rounded),
+            (label: '硬件信息', icon: Icons.memory_rounded),
+            (label: '网络诊断', icon: Icons.hub_outlined),
+            (label: '进程管理', icon: Icons.view_list_rounded),
+          ],
+          builder: (i, active) => switch (i) {
+            0 => PerformancePage(active: active),
+            1 => HardwareDashboardPage(controller: state.healthChecks),
+            2 => inspection('network', '网络诊断'),
+            _ => PerformancePage(active: active, processesOnly: true),
+          },
+        ),
+      ),
+      ModuleSurface(
+        index: 5,
+        child: WorkspaceTabs(
+          active: _index == 5,
+          index: _appTab,
+          onChanged: (i) => setState(() => _appTab = i),
+          tabs: const [
+            (label: '软件卸载', icon: Icons.apps_outlined),
+            (label: '启动项', icon: Icons.rocket_launch_outlined),
+            (label: '应用残留', icon: Icons.folder_off_outlined),
+          ],
+          builder: (i, active) => switch (i) {
+            0 => UninstallPage(active: active),
+            1 => StartupPage(active: active),
+            _ => const AppLeftoversPage(),
+          },
+        ),
+      ),
+      const SizedBox.shrink(),
+      ModuleSurface(
+        index: 7,
+        child: WorkspaceTabs(
+          active: _index == 7,
+          index: _maintenanceTab,
+          onChanged: (i) => setState(() => _maintenanceTab = i),
+          tabs: const [
+            (label: '注册表', icon: Icons.tune_rounded),
+            (label: 'Windows 设置', icon: Icons.settings_suggest_outlined),
+          ],
+          builder: (i, active) =>
+              i == 0 ? const RegistryCleanPage() : const WindowsSettingsPage(),
+        ),
+      ),
+      const SizedBox.shrink(),
       const ModuleSurface(index: 9, child: WhitelistPage()),
       const ModuleSurface(index: 10, child: SettingsPage()),
+      const SizedBox.shrink(),
     ];
 
     // 1) 透明底  2) 主页面圆角层  3) 侧边栏深色毛玻璃层
@@ -141,7 +260,7 @@ class _AppShellState extends State<AppShell> {
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                       colors: _index == 0
-                          ? const [Color(0xFF070C20), Color(0xFF101632)]
+                          ? const [Color(0xFF101F2B), Color(0xFF192E3B)]
                           : [
                               ModulePalette.forIndex(_index).background,
                               ModulePalette.forIndex(_index).end,
@@ -192,7 +311,7 @@ class _AppShellState extends State<AppShell> {
               titles: _titles,
               icons: _icons,
               index: _index,
-              onNavigate: (i) => setState(() => _index = i),
+              onNavigate: _navigate,
             ),
           ),
         ],
@@ -283,49 +402,20 @@ class _SidebarShellState extends State<_SidebarShell> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // 深色基底 + 多彩光斑（毛玻璃观感，整体不透明）
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xFF0F172A),
-                    Color(0xFF1E1B4B),
-                    Color(0xFF0F2A4A),
-                    Color(0xFF1A1030),
-                  ],
+                  colors: [AppColors.sidebar, Color(0xFF1B3540)],
                 ),
               ),
             ),
-            const _Glow(
-              color: Color(0xFF6366F1),
-              offset: Offset(-40, -30),
-              size: 180,
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(painter: _SidebarOrbitPainter()),
+              ),
             ),
-            const _Glow(
-              color: Color(0xFF22D3EE),
-              offset: Offset(140, -20),
-              size: 150,
-            ),
-            const _Glow(
-              color: Color(0xFFA78BFA),
-              offset: Offset(-30, 220),
-              size: 160,
-            ),
-            const _Glow(
-              color: Color(0xFF34D399),
-              offset: Offset(120, 320),
-              size: 140,
-            ),
-            const _Glow(
-              color: Color(0xFFF472B6),
-              offset: Offset(20, 480),
-              size: 130,
-            ),
-            // 轻微雾面，毛玻璃质感
-            ColoredBox(color: Colors.white.withValues(alpha: 0.06)),
-
             // 内容
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -386,21 +476,16 @@ class _SidebarShellState extends State<_SidebarShell> {
                       key: const ValueKey('sidebar-navigation'),
                       padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
                       children: [
-                        for (final group in const [
-                          (title: '工作台', items: [0]),
-                          (title: '空间清理', items: [2, 3, 8]),
-                          (title: '系统管理', items: [4, 5, 6, 7]),
-                          (title: '偏好与保护', items: [9, 10]),
-                        ]) ...[
+                        for (final group in workspaceNavigation) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(12, 16, 0, 8),
                             child: Text(
                               group.title,
                               style: const TextStyle(
-                                fontSize: 10,
+                                fontSize: 11,
                                 fontWeight: FontWeight.w600,
                                 color: Color(0xFF94A3B8),
-                                letterSpacing: 1.2,
+                                letterSpacing: .2,
                               ),
                             ),
                           ),
@@ -426,38 +511,28 @@ class _SidebarShellState extends State<_SidebarShell> {
                       vertical: 10,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.10),
+                      color: Colors.white.withValues(alpha: 0.04),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.16),
+                        color: Colors.white.withValues(alpha: 0.09),
                       ),
                     ),
                     child: Row(
                       children: [
                         const Icon(
                           Icons.shield_outlined,
-                          color: Color(0xFF6EE7B7),
+                          color: AppColors.sidebarActive,
                           size: 16,
                         ),
                         const SizedBox(width: 8),
                         const Expanded(
                           child: Text(
-                            '安全清理 · 可预览',
+                            '白名单保护',
                             style: TextStyle(
                               color: Color(0xFFCBD5E1),
                               fontSize: 11,
                             ),
                           ),
-                        ),
-                        IconButton(
-                          tooltip: '任务与记录',
-                          onPressed: () => showActivityCenter(context),
-                          icon: const Icon(
-                            Icons.history_rounded,
-                            color: Color(0xFFCBD5E1),
-                            size: 18,
-                          ),
-                          visualDensity: VisualDensity.compact,
                         ),
                       ],
                     ),
@@ -472,33 +547,29 @@ class _SidebarShellState extends State<_SidebarShell> {
   }
 }
 
-class _Glow extends StatelessWidget {
-  const _Glow({required this.color, required this.offset, required this.size});
-
-  final Color color;
-  final Offset offset;
-  final double size;
+/// Quiet orbital arcs tie navigation to the overview without animated glows.
+class _SidebarOrbitPainter extends CustomPainter {
+  const _SidebarOrbitPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width * 1.18, size.height * .62);
+    final paint = Paint()
+      ..color = AppColors.sidebarActive.withValues(alpha: .07)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (final radius in [130.0, 190.0, 250.0]) {
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        math.pi * .55,
+        math.pi * 1.2,
+        false,
+        paint,
+      );
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return Positioned(
-      left: offset.dx,
-      top: offset.dy,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(
-            colors: [
-              color.withValues(alpha: 0.45),
-              color.withValues(alpha: 0.0),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  bool shouldRepaint(_SidebarOrbitPainter oldDelegate) => false;
 }
 
 class _SidebarItem extends StatefulWidget {
@@ -526,11 +597,11 @@ class _SidebarItemState extends State<_SidebarItem> {
   Widget build(BuildContext context) {
     final selected = widget.selected;
     final bg = selected
-        ? Colors.white.withValues(alpha: 0.18)
+        ? AppColors.sidebarActive.withValues(alpha: 0.12)
         : _hover
-        ? Colors.white.withValues(alpha: 0.10)
+        ? Colors.white.withValues(alpha: 0.05)
         : Colors.transparent;
-    final fg = selected ? Colors.white : const Color(0xFFCBD5E1);
+    final fg = selected ? Colors.white : AppColors.sidebarText;
 
     return Semantics(
       selected: selected,
@@ -542,18 +613,26 @@ class _SidebarItemState extends State<_SidebarItem> {
           borderRadius: BorderRadius.circular(12),
           onHover: (v) => setState(() => _hover = v),
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 140),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
             decoration: BoxDecoration(
               color: bg,
               borderRadius: BorderRadius.circular(12),
-              border: selected
-                  ? Border.all(color: Colors.white.withValues(alpha: 0.22))
-                  : null,
+              border: Border.all(
+                color: selected
+                    ? AppColors.sidebarActive.withValues(alpha: .22)
+                    : Colors.transparent,
+              ),
             ),
             child: Row(
               children: [
-                Icon(widget.icon, size: 18, color: fg),
+                Icon(
+                  widget.icon,
+                  size: 18,
+                  color: selected ? AppColors.sidebarActive : fg,
+                ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -564,6 +643,20 @@ class _SidebarItemState extends State<_SidebarItem> {
                       fontSize: 13,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                     ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                AnimatedContainer(
+                  duration: MediaQuery.disableAnimationsOf(context)
+                      ? Duration.zero
+                      : const Duration(milliseconds: 140),
+                  width: 4,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? AppColors.sidebarActive
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ],

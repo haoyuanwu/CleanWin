@@ -1,5 +1,9 @@
-/// Discover cleanable values in explicit roots. Discovery never modifies the registry.
-const registryAuditScript = r'''
+// Discover cleanable values in explicit roots. Discovery never modifies the registry.
+import 'registry_target_script.dart';
+
+const registryAuditScript =
+    registryTargetScript +
+    r'''
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -62,14 +66,15 @@ function Add-Record([string]$path, [string]$name, $data, [string]$valueKind,
 function Check-Value([string]$path, $key, [string]$name, [string]$mode, [string]$override='') {
   if ($key.GetValueNames() -notcontains $name) {return}
   $valueKind = $key.GetValueKind($name).ToString()
-  if ($valueKind -notin @('String','ExpandString')) {return}
+  if ($script:spec.Kind -eq 'sharedDll') {if($valueKind -ne 'DWord'){return}}
+  elseif ($valueKind -notin @('String','ExpandString')) {return}
   $raw = Read-Value $key $name
   if ($null -eq $raw) {return}
-  $text = [string]$raw
-  if ($override) {$text = $override}
-  $target = Target $text $mode
-  if (!$target -or $target -notmatch '^[A-Za-z]:\\.+\.(exe|com|bat|cmd|ps1|vbs|js)$') {$script:scope.Unverified++; return}
+  if($script:spec.Kind -eq 'sharedDll' -and [int]$raw -ne 0){return}
+  $target = Resolve-CleanupTarget $script:spec.Kind ([string]$raw) $name
+  if (!$target -or !(Test-CleanupExtension $script:spec.Kind $target)) {$script:scope.Unverified++; return}
   if ($script:spec.Kind -in @('mui','appPaths') -and $target -notmatch '\.exe$') {return}
+  if($script:spec.Kind -eq 'fonts' -and !(Test-FontAlternateMissing ([string]$raw))){$script:scope.Unverified++;return}
   $state = File-State $target
   if ($state -eq 'missing' -and $script:scope.View -eq 'Registry32') {
     $system32 = $env:SystemRoot.TrimEnd('\') + '\System32\'
@@ -80,7 +85,10 @@ function Check-Value([string]$path, $key, [string]$name, [string]$mode, [string]
   }
   if ($state -eq 'unknown') { $script:scope.Unverified++; return }
   if ($state -ne 'missing') {return}
-  $allow = $script:spec.Kind -in @('mui','appPaths','startup') -and $valueKind -in @('String','ExpandString')
+  $allow = $script:spec.Kind -in @('mui','appPaths','startup','fonts','sharedDll','applications','contextMenu')
+  $writable=$null
+  try {$writable=$script:base.OpenSubKey($path,$true);if(!$writable){$script:scope.Unverified++;return}}
+  catch {Warn $path;return} finally {if($writable){$writable.Dispose()}}
   Add-Record $path $name $raw $valueKind $target ('目标未找到: ' + $target) $allow
 }
 function Scan-Key([string]$path, $key) {
@@ -91,6 +99,37 @@ function Scan-Key([string]$path, $key) {
     'mui' {
       foreach ($name in $key.GetValueNames()) {
         if ($name -match '^([A-Za-z]:\\.+?\.exe)(?:\.[^\\]+)?$') {Check-Value $path $key $name 'path' $Matches[1]}
+      }
+    }
+    'fonts' {
+      foreach($name in $key.GetValueNames()){if($name){Check-Value $path $key $name 'path'}}
+    }
+    'sharedDll' {
+      foreach($name in $key.GetValueNames()){if($name){Check-Value $path $key $name 'path'}}
+    }
+    'applications' {
+      foreach($child in $key.GetSubKeyNames()){
+        if($child -notmatch '\.exe$'){continue}
+        $childPath=$path+'\'+$child+'\shell\open\command';$entry=Open-Key $childPath
+        if(!$entry){continue}
+        try {
+          if($entry.GetValueNames() -contains 'DelegateExecute'){continue}
+          Check-Value $childPath $entry '' 'command'
+        } catch {Warn $childPath} finally {$entry.Dispose()}
+      }
+    }
+    'contextMenu' {
+      foreach($child in $key.GetSubKeyNames()){
+        $verbPath=$path+'\'+$child;$verb=Open-Key $verbPath
+        if(!$verb){continue}
+        try {if($verb.GetValueNames() -contains 'DelegateExecute'){continue}}
+        finally {$verb.Dispose()}
+        $childPath=$verbPath+'\command';$entry=Open-Key $childPath
+        if(!$entry){continue}
+        try {
+          if($entry.GetValueNames() -contains 'DelegateExecute'){continue}
+          Check-Value $childPath $entry '' 'command'
+        } catch {Warn $childPath} finally {$entry.Dispose()}
       }
     }
     'appPaths' {
@@ -104,6 +143,15 @@ function Scan-Key([string]$path, $key) {
   }
 }
 $specs = @(
+  @{Kind='fonts';Label='失效字体记录';Path='Software\Microsoft\Windows NT\CurrentVersion\Fonts'},
+  @{Kind='sharedDll';Label='失效共享库引用';Path='Software\Microsoft\Windows\CurrentVersion\SharedDLLs';MachineOnly=$true},
+  @{Kind='applications';Label='失效打开方式';Path='Software\Classes\Applications'},
+  @{Kind='contextMenu';Label='失效右键命令';Path='Software\Classes\*\shell'},
+  @{Kind='contextMenu';Label='失效右键命令';Path='Software\Classes\AllFilesystemObjects\shell'},
+  @{Kind='contextMenu';Label='失效右键命令';Path='Software\Classes\Directory\shell'},
+  @{Kind='contextMenu';Label='失效右键命令';Path='Software\Classes\Directory\Background\shell'},
+  @{Kind='contextMenu';Label='失效右键命令';Path='Software\Classes\Drive\shell'},
+  @{Kind='contextMenu';Label='失效右键命令';Path='Software\Classes\Folder\shell'},
   @{Kind='startup';Label='失效启动命令';Path='Software\Microsoft\Windows\CurrentVersion\Run'},
   @{Kind='startup';Label='失效一次性启动命令';Path='Software\Microsoft\Windows\CurrentVersion\RunOnce'},
   @{Kind='appPaths';Label='失效程序路径';Path='Software\Microsoft\Windows\CurrentVersion\App Paths'},
@@ -117,6 +165,7 @@ foreach ($hive in @('CurrentUser','LocalMachine')) {
     try {
       foreach ($spec in $specs) {
         if ($spec.UserOnly -and $hive -ne 'CurrentUser') {continue}
+        if ($spec.MachineOnly -and $hive -ne 'LocalMachine') {continue}
         $script:spec = $spec
         $script:scope = @{Hive=$(if($hive -eq 'CurrentUser'){'HKCU'}else{'HKLM'});View=$view;Path=$spec.Path;Category=$spec.Kind;Status='ok';Keys=0;Checked=0;Unverified=0}
         $key = Open-Key $spec.Path

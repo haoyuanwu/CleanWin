@@ -8,7 +8,6 @@ import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 import '../widgets/page_shell.dart';
 import '../widgets/module_insights.dart';
-import '../widgets/activity_center.dart';
 import '../widgets/duplicate_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -157,7 +156,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 : (value) => _save(
                     '扫描模式',
                     (current) => current.copyWith(deepScan: value),
-                    feedback: '已保存，下次扫描生效；深度结果仍需手动确认',
+                    feedback: '已保存，下次扫描生效；结果按统一默认规则选择',
                   ),
           ),
           const SizedBox(height: 12),
@@ -168,7 +167,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 _SwitchTile(
                   icon: Icons.public_rounded,
                   title: '扫描浏览器缓存',
-                  subtitle: '仅扫描可操作文件，默认不勾选；清理后网页可能重新加载',
+                  subtitle: '仅扫描可操作文件，默认勾选；清理后网页可能重新加载',
                   value: options.cleanBrowserCache,
                   onChanged:
                       state.scanning || state.cleaning || state.savingOptions
@@ -250,21 +249,6 @@ class _SettingsPageState extends State<SettingsPage> {
             runSpacing: 8,
             children: [
               OutlinedButton.icon(
-                onPressed: () => showActivityCenter(context),
-                icon: const Icon(Icons.task_alt_rounded),
-                label: const Text('任务与记录'),
-              ),
-              OutlinedButton.icon(
-                onPressed: () => showActivityCenter(context, tab: 1),
-                icon: const Icon(Icons.history_rounded),
-                label: const Text('清理历史'),
-              ),
-              OutlinedButton.icon(
-                onPressed: () => showActivityCenter(context, tab: 2),
-                icon: const Icon(Icons.restore_rounded),
-                label: const Text('注册表备份'),
-              ),
-              OutlinedButton.icon(
                 onPressed: () => showDuplicateFiles(context),
                 icon: const Icon(Icons.find_in_page_outlined),
                 label: const Text('重复文件检查'),
@@ -295,7 +279,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   '1. 不清理「文档 / 图片 / 桌面 / 视频 / 音乐」等个人目录。\n'
                   '2. 不清理浏览器的 Cookie、密码、书签、历史中的登录态。\n'
                   '3. 下载目录默认不勾选任何文件。\n'
-                  '4. 被占用的文件自动跳过，不会强制结束进程。\n'
+                  '4. 被占用的文件默认跳过；仅在你逐项确认后请求相关软件正常退出，处理后尝试自动恢复。\n'
                   '5. 仅处理明确列出的缓存、日志与手动勾选项目，不删除系统程序文件。',
                   style: TextStyle(
                     color: AppColors.textSecondary,

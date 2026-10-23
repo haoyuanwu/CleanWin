@@ -12,7 +12,7 @@ import 'package:clean_windows/services/whitelist_service.dart';
 import 'package:clean_windows/state/app_state.dart';
 import 'package:clean_windows/theme/app_theme.dart';
 import 'package:clean_windows/theme/module_theme.dart';
-import 'package:clean_windows/widgets/activity_center.dart';
+import 'package:clean_windows/widgets/registry_backups_dialog.dart';
 import 'package:clean_windows/widgets/duplicate_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -135,30 +135,13 @@ void main() {
   );
 
   testWidgets(
-    'task center cancels once and history distinguishes recycled space',
+    'registry recovery is independent of removed task and history pages',
     (tester) async {
-      var cancelled = 0;
-      TaskBoard.instance.update(
-        'test',
-        '文件扫描',
-        '正在读取',
-        cancel: () => cancelled++,
-      );
-      await tester.pumpWidget(
-        app(ActivityCenter(journal: journal, backups: _Backups())),
-      );
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('取消'));
-      await tester.pump();
-      expect(cancelled, 1);
-      expect(TaskBoard.instance.tasks['test']!.cancel, isNull);
-      TaskBoard.instance.finish('test');
+      await tester.pumpWidget(app(RegistryBackupsDialog(backups: _Backups())));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('清理记录'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('回收站 100 MB'), findsOneWidget);
-      expect(find.textContaining('释放 0 B'), findsOneWidget);
-      expect(find.byType(Scrollbar), findsNothing);
+      expect(find.text('注册表备份'), findsOneWidget);
+      expect(find.text('任务与记录'), findsNothing);
+      expect(find.text('清理记录'), findsNothing);
     },
   );
 
@@ -197,9 +180,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(
-      app(ActivityCenter(journal: journal, tab: 1, backups: _Backups())),
-    );
+    await tester.pumpWidget(app(RegistryBackupsDialog(backups: _Backups())));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     final service = _Duplicates(state.whitelist);
@@ -219,10 +200,10 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      for (final name in ['activity', 'duplicates']) {
+      for (final name in ['backups', 'duplicates']) {
         final key = GlobalKey();
-        final dialog = name == 'activity'
-            ? ActivityCenter(journal: journal, tab: 1, backups: _Backups())
+        final dialog = name == 'backups'
+            ? RegistryBackupsDialog(backups: _Backups())
             : DuplicateDialog(
                 root: r'C:\Example',
                 service: _Duplicates(state.whitelist),

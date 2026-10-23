@@ -24,6 +24,8 @@ apply_standard_settings(${BINARY_NAME})
 # active code page when compiling UTF-8 sources without a BOM.
 if(MSVC)
   target_compile_options(${BINARY_NAME} PRIVATE /utf-8)
+  # Match the embedded manifest; do not merge the linker default asInvoker.
+  target_link_options(${BINARY_NAME} PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
 endif()
 
 # Add preprocessor definitions for the build version.
@@ -48,11 +50,5 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
 
-# Unlock output binary before linking: a still-running debug instance
-# otherwise causes LNK1104 (cannot open clean_windows.exe).
-add_custom_command(TARGET ${BINARY_NAME} PRE_LINK
-  COMMAND ${CMAKE_COMMAND} -E echo "Stopping any running ${BINARY_NAME}.exe before link..."
-  COMMAND cmd /c "taskkill /F /IM ${BINARY_NAME}.exe >nul 2>&1 & exit /b 0"
-  COMMENT "Releasing ${BINARY_NAME}.exe to avoid LNK1104"
-  VERBATIM
-)
+# Flutter Manager stops this project's run before rebuilding. Do not kill all
+# processes sharing the executable name (they may belong to another checkout).

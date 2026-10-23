@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:collection';
 
 import 'package:path/path.dart' as p;
 
@@ -32,6 +33,22 @@ const disposableCacheNames = {
   'media cache',
   'media cache files',
   'crashpad',
+};
+
+/// Shallow daily discovery excludes shader, offline/service-worker and media stores.
+const quickSoftwareCacheNames = {
+  'cache',
+  'caches',
+  'code cache',
+  'code_cache',
+  'cacheddata',
+  'cached data',
+  'httpcache',
+  'http_cache',
+  'imagecache',
+  'image_cache',
+  'webcache',
+  'web_cache',
 };
 
 /// Walk one directory at a time so an inaccessible child does not abort siblings.
@@ -75,6 +92,10 @@ Stream<FileSystemEntity> walkFiles(
 Stream<Directory> discoverCaches(
   Directory root, {
   int maxDepth = 8,
+  int profileDepth = 0,
+  bool breadthFirst = false,
+  int? maxDirectories,
+  void Function(String path)? onLimit,
   Set<String> cacheNames = disposableCacheNames,
   bool includePackageTemp = true,
   bool pruneCaches = false,
@@ -83,16 +104,24 @@ Stream<Directory> discoverCaches(
   void Function(String path)? onPath,
   bool Function()? cancelled,
 }) async* {
-  final pending = <(Directory, int)>[(root, 0)];
+  final pending = Queue<(Directory, int)>.of([(root, 0)]);
+  var visited = 0;
   while (pending.isNotEmpty) {
     if (cancelled?.call() ?? false) return;
-    final (dir, depth) = pending.removeLast();
+    final (dir, depth) = breadthFirst
+        ? pending.removeFirst()
+        : pending.removeLast();
     if (protectedCachePath(dir.path)) continue;
     if (FileSystemEntity.typeSync(dir.path, followLinks: false) ==
         FileSystemEntityType.link) {
       continue;
     }
     if (exclude?.call(dir.path) ?? false) continue;
+    if (maxDirectories != null && visited >= maxDirectories) {
+      onLimit?.call(root.path);
+      return;
+    }
+    visited++;
     onPath?.call(dir.path);
     if (depth > 0) {
       final name = p.basename(dir.path).toLowerCase();
@@ -107,6 +136,13 @@ Stream<Directory> discoverCaches(
       if (pruneCaches && disposableCacheNames.contains(name)) continue;
       if ({
         'node_modules',
+        'downloads',
+        'download',
+        'quarantine',
+        'nplayerdisk',
+        'xcdn',
+        'local_files',
+        'cachefile',
         '.git',
         'winsxs',
         'installer',
@@ -127,7 +163,28 @@ Stream<Directory> discoverCaches(
         continue;
       }
     }
-    if (depth >= maxDepth) continue;
+    if (depth >= maxDepth) {
+      // Only known profile containers receive extra depth; arbitrary application
+      // trees stay bounded, including on machines with other installed software.
+      final segments = p
+          .split(p.relative(dir.path, from: root.path))
+          .map((s) => s.toLowerCase());
+      final inProfile = segments.any(
+        (s) => const {
+          'user data',
+          'userdata',
+          'profiles',
+          'partitions',
+          'localcache',
+          'localstate',
+          'ebwebview',
+          'webview2',
+        }.contains(s),
+      );
+      if (profileDepth <= 0 || !inProfile || depth >= maxDepth + profileDepth) {
+        continue;
+      }
+    }
     try {
       await for (final child in dir.list(followLinks: false)) {
         if (child is Directory) pending.add((child, depth + 1));
@@ -165,4 +222,30 @@ bool protectedCachePath(String path) {
       .toLowerCase()
       .split('\\')
       .any(protected.contains);
+}
+
+/// Generic software-cache discovery must not walk Windows service data stores.
+/// Explicit system cleanup rules still own their narrow, supported targets.
+bool systemServiceDataPath(String path, String programData) {
+  final context = p.windows;
+  final root = context.normalize(programData).toLowerCase();
+  final target = context.normalize(path).toLowerCase();
+  if (!context.isWithin(root, target)) return false;
+  final relative = context.relative(target, from: root);
+  const serviceRoots = {
+    'packages',
+    'windowsholographicdevices',
+    'usoprivate',
+    'usoshared',
+    r'windows master store\servicedata',
+    r'microsoft\diagnosis',
+    r'microsoft\smsrouter',
+    r'microsoft\windows',
+    r'microsoft\windows defender',
+    r'microsoft\crypto',
+    r'microsoft\vault',
+  };
+  return serviceRoots.any(
+    (service) => relative == service || relative.startsWith('$service\\'),
+  );
 }

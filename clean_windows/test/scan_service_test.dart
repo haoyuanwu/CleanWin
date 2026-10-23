@@ -269,17 +269,14 @@ void main() {
     },
   );
 
-  test('memory dumps remain unselected after scanning', () async {
-    put(p.join(environment['SystemRoot']!, 'Minidump', 'crash.dmp'));
-    put(p.join(environment['SystemRoot']!, 'MEMORY.DMP'));
+  test('memory dumps are excluded from scanning', () async {
+    final mini = put(p.join(environment['SystemRoot']!, 'Minidump', 'crash.dmp'));
+    final full = put(p.join(environment['SystemRoot']!, 'MEMORY.DMP'));
     final result = await service.scanAll(
       categories: {CleanCategory.memoryDumps},
     );
-    expect(result[CleanCategory.memoryDumps]!.items, hasLength(2));
-    expect(
-      result[CleanCategory.memoryDumps]!.items.every((i) => !i.selected),
-      isTrue,
-    );
+    expect(result, isEmpty);
+    expect(mini.existsSync() && full.existsSync(), isTrue);
   });
   test(
     'path progress arrives before category completion and clears at finish',

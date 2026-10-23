@@ -156,7 +156,7 @@ void main() {
   );
 
   test(
-    'dump filtering and WER ownership protect non-dump diagnostic data',
+    'memory dumps stay excluded even when explicitly requested',
     () async {
       final dump = put(
         p.join(
@@ -172,12 +172,9 @@ void main() {
       final result = await scan.scanAll(
         categories: {CleanCategory.systemCache, CleanCategory.memoryDumps},
       );
-      expect(
-        result[CleanCategory.memoryDumps]!.items.expand((i) => i.scannedFiles!),
-        [dump.path],
-      );
-      expect(result[CleanCategory.memoryDumps]!.selectedCount, 0);
+      expect(result, isNot(contains(CleanCategory.memoryDumps)));
       expect(result[CleanCategory.systemCache]!.totalSizeBytes, 0);
+      expect(dump.existsSync(), isTrue);
     },
   );
 
@@ -219,7 +216,7 @@ void main() {
       result[CleanCategory.windowsUpdate]!.items.expand((i) => i.scannedFiles!),
       unorderedEquals([download.path, delivery.path]),
     );
-    expect(result[CleanCategory.windowsUpdate]!.selectedCount, 0);
+    expect(result[CleanCategory.windowsUpdate]!.selectedCount, 2);
     expect(result[CleanCategory.systemCache]!.totalSizeBytes, 0);
     expect(database.existsSync(), isTrue);
   });
@@ -363,7 +360,7 @@ void main() {
       unorderedEquals([shortcut.path, jump.path]),
     );
     expect(found, hasLength(2));
-    expect(found.every((i) => !i.selected), isTrue);
+    expect(found.every((i) => i.selected), isTrue);
   });
 
   test(
@@ -377,7 +374,7 @@ void main() {
       put(p.join(env['APPDATA']!, 'App', 'logs', 'settings.json'));
       final found = await items(CleanCategory.softwareUsage);
       expect(found.single.scannedFiles, [log.path]);
-      expect(found.single.selected, isFalse);
+      expect(found.single.selected, isTrue);
     },
   );
 

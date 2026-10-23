@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "clean_windows" "\0"
+            VALUE "CompanyName", "CleanWin" "\0"
+            VALUE "FileDescription", "CleanWin" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "clean_windows" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 CleanWin. All rights reserved." "\0"
             VALUE "OriginalFilename", "clean_windows.exe" "\0"
-            VALUE "ProductName", "clean_windows" "\0"
+            VALUE "ProductName", "CleanWin" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

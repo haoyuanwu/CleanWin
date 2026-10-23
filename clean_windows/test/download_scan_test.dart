@@ -63,7 +63,7 @@ void main() {
         ),
       )..whitelist = whitelist;
 
-  test('one-click includes current-user recycle and system and manager downloads without auto-selection', () async {
+  test('one-click measures and selects current-user recycle while downloads stay separate', () async {
     final system = put('MovedDownloads/video.mp4', bytes: 10 * 1024 * 1024);
     final tencent = put('Volume/QMDownload/SoftMgr/setup.exe');
     final antivirus = put('Volume/360Downloads/Software/version/setup.msi');
@@ -88,7 +88,11 @@ void main() {
       ),
       [recycle.path],
     );
-    expect(result[CleanCategory.recycleBin]!.selectedCount, 0);
+    expect(
+      result[CleanCategory.recycleBin]!.totalSizeBytes,
+      recycle.lengthSync(),
+    );
+    expect(result[CleanCategory.recycleBin]!.selectedCount, 1);
   });
 
   test('configured download folders deduplicate snapshots and honor whitelist and protection', () async {

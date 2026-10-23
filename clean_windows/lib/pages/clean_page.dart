@@ -1,20 +1,25 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/clean_models.dart';
+import '../models/workspace_structure.dart';
 import '../services/path_utils.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../theme/module_theme.dart';
 import '../widgets/clean_progress_dialog.dart';
 import '../widgets/common.dart';
 import '../widgets/page_shell.dart';
 import '../widgets/clean_overview.dart';
 import '../widgets/cosmic_scene.dart';
+import '../widgets/system_cleanup_panel.dart';
 
 class CleanPage extends StatefulWidget {
-  const CleanPage({super.key});
+  const CleanPage({super.key, this.onNavigate});
+  final ValueChanged<int>? onNavigate;
 
   @override
   State<CleanPage> createState() => _CleanPageState();
@@ -28,6 +33,7 @@ class _CleanPageState extends State<CleanPage> {
   final _heroKey = GlobalKey();
   ThemeData? _cosmicTheme;
   DateTime? _celebrationAt;
+  bool _occupiedOperation = false;
 
   @override
   void dispose() {
@@ -57,6 +63,15 @@ class _CleanPageState extends State<CleanPage> {
 
   void _viewResults() {
     if (!_scroll.hasClients) return;
+    final results = _resultsKey.currentContext;
+    if (results != null) {
+      Scrollable.ensureVisible(
+        results,
+        duration: cleanMotion(context, 450),
+        curve: Curves.easeOutCubic,
+      );
+      return;
+    }
     final hero = _heroKey.currentContext?.findRenderObject() as RenderBox?;
     if (hero != null) {
       final offset = hero.size.height.clamp(
@@ -77,10 +92,11 @@ class _CleanPageState extends State<CleanPage> {
 
   Future<void> _startScan() async {
     final state = context.read<AppState>();
-    if (state.scanning || state.cleaning) return;
+    if (state.scanning || state.cleaning || _occupiedOperation) return;
     setState(() => _focusedCategory = null);
     try {
-      await state.scan(force: true);
+      await state.scanOverview();
+      if (mounted) await _offerOccupiedRescan(state);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -90,11 +106,74 @@ class _CleanPageState extends State<CleanPage> {
     }
   }
 
+  Future<void> _offerOccupiedRescan(AppState state) async {
+    final paths = state.scannedInUsePaths;
+    if (paths.isEmpty || !mounted) return;
+    final session = await state.openScannedOccupiedSession();
+    if (!mounted) {
+      await session?.dispose();
+      return;
+    }
+    if (session == null || session.applications.isEmpty) {
+      await session?.dispose();
+      return;
+    }
+    final processIds = await showDialog<Set<int>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Theme(
+        data: _cosmicTheme ?? Theme.of(context),
+        child: OccupiedAppsDialog(
+          applications: session.applications,
+          fileCount: paths.length,
+          forCleanup: false,
+          canCloseAndRestore: session.canCloseAndRestore,
+        ),
+      ),
+    );
+    if (processIds == null || processIds.isEmpty || !mounted) {
+      await session.dispose();
+      return;
+    }
+    setState(() => _occupiedOperation = true);
+    var closed = false;
+    try {
+      closed = await session.close(processIds);
+      if (!closed) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('软件没有正常退出，已保留占用文件')));
+        }
+        return;
+      }
+      await state.scanOverview();
+    } finally {
+      final restored = closed ? await session.restore() : true;
+      if (!closed) await session.dispose();
+      if (mounted) {
+        setState(() => _occupiedOperation = false);
+        if (!restored) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('扫描已完成，但部分软件未能自动重新打开')));
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final showResults = state.scanGeneration > 0 && state.hasResults;
-    final busy = state.scanning || state.cleaning;
+    final overviewCategories = state.categories
+        .where((category) => cleanupOwner(category.category) == 0)
+        .toList();
+    final showResults =
+        state.scanGeneration > 0 && overviewCategories.isNotEmpty;
+    final busy =
+        state.scanning ||
+        state.cleaning ||
+        state.systemCleanup.busy ||
+        _occupiedOperation;
     final smartItems = state.categories
         .where((category) => cosmicSmartCategories.contains(category.category))
         .expand((category) => category.items)
@@ -104,27 +183,45 @@ class _CleanPageState extends State<CleanPage> {
       0,
       (sum, item) => sum + item.sizeBytes,
     );
-    final selectedBytes = state.totalSelectedBytes;
-    final selectedCount = state.totalSelectedCount;
+    final overviewItems = overviewCategories
+        .expand((category) => category.items)
+        .where((item) => item.selected)
+        .toList();
+    final selectedBytes = overviewItems.fold<int>(
+      0,
+      (sum, item) => sum + item.sizeBytes,
+    );
+    final selectedCount = overviewItems.length;
     final manualCount = selectedCount - smartItems.length;
     final manualBytes = selectedBytes - smartBytes;
     final cleanedSinceScan =
         state.lastCleanAt != null &&
         (state.lastScanAt == null ||
             !state.lastCleanAt!.isBefore(state.lastScanAt!));
-    final visibleCategories = state.categories
-        .where(
-          (category) =>
-              (!cleanedSinceScan ||
-                  category.items.isNotEmpty ||
-                  category.error != null) &&
-              (_focusedCategory == null ||
-                  category.category == _focusedCategory) &&
-              category.category.title.toLowerCase().contains(
-                _categoryQuery.trim().toLowerCase(),
-              ),
-        )
-        .toList();
+    final visibleCategories =
+        overviewCategories
+            .where(
+              (category) =>
+                  (!cleanedSinceScan ||
+                      category.items.isNotEmpty ||
+                      category.category == CleanCategory.appCache ||
+                      category.error != null) &&
+                  (_focusedCategory == null ||
+                      category.category == _focusedCategory) &&
+                  category.category.title.toLowerCase().contains(
+                    _categoryQuery.trim().toLowerCase(),
+                  ),
+            )
+            .toList()
+          ..sort((a, b) {
+            final sectionOrder = CleanupSection.of(a.category).index
+                .compareTo(CleanupSection.of(b.category).index);
+            if (sectionOrder != 0) return sectionOrder;
+            final order = CleanupSection.of(a.category).categories;
+            return order
+                .indexOf(a.category)
+                .compareTo(order.indexOf(b.category));
+          });
     final base = Theme.of(context);
     final theme = base.copyWith(
       brightness: Brightness.dark,
@@ -147,8 +244,11 @@ class _CleanPageState extends State<CleanPage> {
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: base.outlinedButtonTheme.style?.copyWith(
           foregroundColor: const WidgetStatePropertyAll(CosmicColors.cyan),
-          side: const WidgetStatePropertyAll(
-            BorderSide(color: CosmicColors.muted, width: 1.5),
+          backgroundColor: const WidgetStatePropertyAll(Color(0xFF233D4A)),
+          side: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.focused)
+                ? const BorderSide(color: CosmicColors.cyan, width: 2)
+                : BorderSide.none,
           ),
         ),
       ),
@@ -185,278 +285,325 @@ class _CleanPageState extends State<CleanPage> {
       ),
     );
     _cosmicTheme = theme;
-    return Theme(
-      data: theme,
-      child: Material(
-        color: Colors.transparent,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: CosmicBackdrop(
-            child: Padding(
-              padding: kPagePadding,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(
-                        Icons.auto_awesome_rounded,
-                        size: 17,
-                        color: CosmicColors.cyan,
-                      ),
-                      SizedBox(width: 9),
-                      Text(
-                        '概览与清理',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
+    return ScrollConfiguration(
+      behavior: const CleanScrollBehavior(showScrollbars: false),
+      child: Theme(
+        data: theme,
+        child: Material(
+          color: Colors.transparent,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: CosmicBackdrop(
+              child: Padding(
+                padding: kPagePadding,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.auto_awesome_rounded,
+                          size: 17,
+                          color: CosmicColors.cyan,
                         ),
-                      ),
-                      Spacer(),
-                      Text(
-                        'COSMIC / 01',
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: CosmicColors.muted,
-                          letterSpacing: 2,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: CustomScrollView(
-                      controller: _scroll,
-                      key: const PageStorageKey('clean-workspace'),
-                      slivers: [
-                        SliverToBoxAdapter(
-                          child: CleanOverview(
-                            key: _heroKey,
-                            state: state,
-                            hasResults: showResults,
-                            cleanedAt: _celebrationAt,
-                            onScan: _startScan,
-                            onSmartClean:
-                                busy || selectedCount == 0 || !showResults
-                                ? null
-                                : () => _confirmClean(context),
-                            onCategory: _focusCategory,
-                            onViewResults: _viewResults,
+                        const SizedBox(width: 9),
+                        const Text(
+                          '概览与清理',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
                           ),
                         ),
-                        if (showResults) ...[
-                          SliverToBoxAdapter(
-                            child: Padding(
-                              key: _resultsKey,
-                              padding: const EdgeInsets.only(
-                                top: 24,
-                                bottom: 14,
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Expanded(
-                                        child: Text(
-                                          '扫描结果',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w600,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      ),
-                                      Text(
-                                        '${state.results.length} 个星域',
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          color: CosmicColors.muted,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Toolbar(
-                                    children: [
-                                      if (_focusedCategory != null)
-                                        OutlinedButton.icon(
-                                          onPressed: () => setState(
-                                            () => _focusedCategory = null,
-                                          ),
-                                          icon: const Icon(
-                                            Icons.arrow_back_rounded,
-                                            size: 16,
-                                          ),
-                                          label: const Text('全部星域'),
-                                        ),
-                                      ModuleSearchField(
-                                        hint: '查找清理分类…',
-                                        onChanged: (value) => setState(
-                                          () => _categoryQuery = value,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
+                        const Spacer(),
+                        const Text(
+                          'COSMIC / 01',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: CosmicColors.muted,
+                            letterSpacing: 2,
                           ),
-                          if (visibleCategories.isEmpty)
-                            SliverToBoxAdapter(
-                              child: Padding(
-                                padding: const EdgeInsets.all(26),
-                                child: Center(
-                                  child: Text(
-                                    cleanedSinceScan &&
-                                            _categoryQuery.isEmpty &&
-                                            _focusedCategory == null
-                                        ? '已选项目已处理，暂无剩余内容'
-                                        : '没有匹配的分类',
-                                    style: TextStyle(color: CosmicColors.muted),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          SliverList.builder(
-                            findChildIndexCallback: (key) {
-                              final index = visibleCategories.indexWhere(
-                                (category) =>
-                                    key ==
-                                    ValueKey(
-                                      '${state.scanGeneration}_${category.category.name}',
-                                    ),
-                              );
-                              return index < 0 ? null : index;
-                            },
-                            itemCount: visibleCategories.length,
-                            itemBuilder: (context, index) {
-                              final category = visibleCategories[index];
-                              return _ResultEntrance(
-                                key: ValueKey(
-                                  '${state.scanGeneration}_${category.category.name}',
-                                ),
-                                index: index,
-                                child: _CategoryCard(
-                                  key: ValueKey(
-                                    '${category.category.name}-${_focusedCategory == category.category}',
-                                  ),
-                                  category: category,
-                                  initiallyExpanded:
-                                      _focusedCategory == category.category,
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                        const SliverToBoxAdapter(child: SizedBox(height: 18)),
+                        ),
                       ],
                     ),
-                  ),
-                  if (showResults)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: CosmicColors.panel,
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(
-                            color: CosmicColors.cyan.withValues(alpha: .25),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: CustomScrollView(
+                        controller: _scroll,
+                        key: const PageStorageKey('clean-workspace'),
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: CleanOverview(
+                              key: _heroKey,
+                              state: state,
+                              hasResults: showResults,
+                              cleanedAt: _celebrationAt,
+                              onScan: _startScan,
+                              onSmartClean:
+                                  busy || selectedCount == 0 || !showResults
+                                  ? null
+                                  : () => _confirmClean(context),
+                              onCategory: _focusCategory,
+                              onViewResults: _viewResults,
+                            ),
                           ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: CosmicColors.cyan.withValues(alpha: .04),
-                              blurRadius: 20,
+                          if (showResults) ...[
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                key: _resultsKey,
+                                padding: const EdgeInsets.only(
+                                  top: 24,
+                                  bottom: 14,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Expanded(
+                                          child: Text(
+                                            '扫描结果',
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                        Text(
+                                          '${visibleCategories.length} 类',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: CosmicColors.muted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Toolbar(
+                                      children: [
+                                        if (_focusedCategory != null)
+                                          OutlinedButton.icon(
+                                            onPressed: () => setState(
+                                              () => _focusedCategory = null,
+                                            ),
+                                            icon: const Icon(
+                                              Icons.arrow_back_rounded,
+                                              size: 16,
+                                            ),
+                                            label: const Text('全部星域'),
+                                          ),
+                                        ModuleSearchField(
+                                          hint: '查找清理分类…',
+                                          onChanged: (value) => setState(
+                                            () => _categoryQuery = value,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            if (visibleCategories.isEmpty)
+                              SliverToBoxAdapter(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(26),
+                                  child: Center(
+                                    child: Text(
+                                      cleanedSinceScan &&
+                                              _categoryQuery.isEmpty &&
+                                              _focusedCategory == null
+                                          ? '已选项目已处理，暂无剩余内容'
+                                          : '没有匹配的分类',
+                                      style: TextStyle(
+                                        color: CosmicColors.muted,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            SliverList.builder(
+                              findChildIndexCallback: (key) {
+                                final index = visibleCategories.indexWhere(
+                                  (category) =>
+                                      key ==
+                                      ValueKey(
+                                        '${state.scanGeneration}_${category.category.name}',
+                                      ),
+                                );
+                                return index < 0 ? null : index;
+                              },
+                              itemCount: visibleCategories.length,
+                              itemBuilder: (context, index) {
+                                final category = visibleCategories[index];
+                                return _ResultEntrance(
+                                  key: ValueKey(
+                                    '${state.scanGeneration}_${category.category.name}',
+                                  ),
+                                  index: index,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      if (index == 0 ||
+                                          CleanupSection.of(
+                                                visibleCategories[index - 1]
+                                                    .category,
+                                              ) !=
+                                              CleanupSection.of(
+                                                category.category,
+                                              ))
+                                        _CleanupSectionHeader(
+                                          section: CleanupSection.of(
+                                            category.category,
+                                          ),
+                                          categories: visibleCategories
+                                              .where(
+                                                (entry) =>
+                                                    CleanupSection.of(
+                                                      entry.category,
+                                                    ) ==
+                                                    CleanupSection.of(
+                                                      category.category,
+                                                    ),
+                                              )
+                                              .toList(),
+                                        ),
+                                      _CategoryCard(
+                                        key: ValueKey(
+                                          '${category.category.name}-${_focusedCategory == category.category}',
+                                        ),
+                                        category: category,
+                                        initiallyExpanded:
+                                            _focusedCategory ==
+                                            category.category,
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
                             ),
                           ],
-                        ),
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final amount = Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  '已选 · $selectedCount 项',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: CosmicColors.muted,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                AnimatedByteCount(
-                                  key: const ValueKey('clean-selected-total'),
-                                  bytes: selectedBytes,
-                                  style: const TextStyle(
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.w700,
-                                    color: CosmicColors.cyan,
-                                  ),
-                                ),
-                                if (manualCount > 0) ...[
-                                  const SizedBox(height: 4),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 18),
+                              child: SystemCleanupPanel(state: state),
+                            ),
+                          ),
+                          const SliverToBoxAdapter(child: SizedBox(height: 18)),
+                        ],
+                      ),
+                    ),
+                    if (showResults)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: CosmicColors.panel,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: CosmicColors.cyan.withValues(alpha: .25),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: CosmicColors.cyan.withValues(alpha: .04),
+                                blurRadius: 20,
+                              ),
+                            ],
+                          ),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final amount = Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
                                   Text(
-                                    '缓存 ${formatBytes(smartBytes)} · 其他所选 ${formatBytes(manualBytes)}',
+                                    '已选 · $selectedCount 项',
                                     style: const TextStyle(
                                       fontSize: 11,
                                       color: CosmicColors.muted,
                                     ),
                                   ),
+                                  const SizedBox(height: 4),
+                                  AnimatedByteCount(
+                                    key: const ValueKey('clean-selected-total'),
+                                    bytes: selectedBytes,
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w700,
+                                      color: CosmicColors.cyan,
+                                    ),
+                                  ),
+                                  if (manualCount > 0) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '缓存 ${formatBytes(smartBytes)} · 其他所选 ${formatBytes(manualBytes)}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: CosmicColors.muted,
+                                      ),
+                                    ),
+                                  ],
                                 ],
-                              ],
-                            );
-                            final actions = Wrap(
-                              spacing: 8,
-                              runSpacing: 6,
-                              children: [
-                                ElevatedButton.icon(
-                                  onPressed: busy || selectedCount == 0
-                                      ? null
-                                      : () => _confirmClean(context),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: CosmicColors.cyan,
-                                    foregroundColor: CosmicColors.background,
-                                    disabledBackgroundColor: const Color(
-                                      0xFF26364A,
-                                    ),
-                                    disabledForegroundColor: CosmicColors.muted,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 22,
-                                      vertical: 19,
-                                    ),
-                                  ),
-                                  icon: const Icon(
-                                    Icons.auto_awesome_rounded,
-                                    size: 18,
-                                  ),
-                                  label: Text(state.cleaning ? '清理中…' : '智能清理'),
-                                ),
-                              ],
-                            );
-                            if (constraints.maxWidth < 440) {
-                              return Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                              );
+                              final actions = Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
                                 children: [
-                                  amount,
-                                  const SizedBox(height: 8),
+                                  ElevatedButton.icon(
+                                    onPressed: busy || selectedCount == 0
+                                        ? null
+                                        : () => _confirmClean(context),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: CosmicColors.cyan,
+                                      foregroundColor: CosmicColors.background,
+                                      disabledBackgroundColor: const Color(
+                                        0xFF26364A,
+                                      ),
+                                      disabledForegroundColor:
+                                          CosmicColors.muted,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 22,
+                                        vertical: 19,
+                                      ),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.auto_awesome_rounded,
+                                      size: 18,
+                                    ),
+                                    label: Text(
+                                      state.cleaning ? '清理中…' : '智能清理',
+                                    ),
+                                  ),
+                                ],
+                              );
+                              if (constraints.maxWidth < 440) {
+                                return Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    amount,
+                                    const SizedBox(height: 8),
+                                    actions,
+                                  ],
+                                );
+                              }
+                              return Row(
+                                children: [
+                                  Expanded(child: amount),
+                                  const SizedBox(width: 10),
                                   actions,
                                 ],
                               );
-                            }
-                            return Row(
-                              children: [
-                                Expanded(child: amount),
-                                const SizedBox(width: 10),
-                                actions,
-                              ],
-                            );
-                          },
+                            },
+                          ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -467,10 +614,15 @@ class _CleanPageState extends State<CleanPage> {
 
   Future<void> _confirmClean(BuildContext context) async {
     final state = context.read<AppState>();
-    if (state.scanning || state.cleaning || state.scanGeneration == 0) return;
+    if (state.scanning ||
+        state.cleaning ||
+        _occupiedOperation ||
+        state.scanGeneration == 0) {
+      return;
+    }
     final items = state.categories
         .expand((category) => category.items)
-        .where((item) => item.selected)
+        .where((item) => item.selected && cleanupOwner(item.category) == 0)
         .toList();
     final categories = items.map((item) => item.category).toSet();
     final requiresManualConfirmation = categories.any(
@@ -504,15 +656,63 @@ class _CleanPageState extends State<CleanPage> {
       }
     }
     if (context.mounted) {
-      final before = state.lastCleanAt;
-      final report = await showDialog<CleanReport>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => Theme(
-          data: _cosmicTheme ?? Theme.of(context),
-          child: CleanProgressDialog(categories: categories),
-        ),
+      final occupied = await state.openSelectedOccupiedSession(
+        categories: categories,
       );
+      if (!mounted) {
+        await occupied?.dispose();
+        return;
+      }
+      var closed = false;
+      if (occupied != null && occupied.applications.isNotEmpty) {
+        final processIds = await showDialog<Set<int>>(
+          context: this.context,
+          barrierDismissible: false,
+          builder: (_) => Theme(
+            data: _cosmicTheme ?? Theme.of(this.context),
+            child: OccupiedAppsDialog(
+              applications: occupied.applications,
+              fileCount: occupied.fileCount,
+              forCleanup: true,
+              canCloseAndRestore: occupied.canCloseAndRestore,
+            ),
+          ),
+        );
+        if (processIds != null && processIds.isNotEmpty && mounted) {
+          setState(() => _occupiedOperation = true);
+          closed = await occupied.close(processIds);
+          if (!closed && mounted) {
+            ScaffoldMessenger.of(this.context).showSnackBar(
+              const SnackBar(content: Text('软件没有正常退出，占用文件将在清理时跳过')),
+            );
+          }
+        }
+      }
+      final before = state.lastCleanAt;
+      CleanReport? report;
+      try {
+        if (mounted) {
+          report = await showDialog<CleanReport>(
+            context: this.context,
+            barrierDismissible: false,
+            builder: (_) => Theme(
+              data: _cosmicTheme ?? Theme.of(this.context),
+              child: CleanProgressDialog(categories: categories),
+            ),
+          );
+        }
+      } finally {
+        final restored = closed ? await occupied!.restore() : true;
+        if (!closed) await occupied?.dispose();
+        if (mounted) {
+          setState(() => _occupiedOperation = false);
+          if (!restored) {
+            ScaffoldMessenger.of(this.context).showSnackBar(
+              const SnackBar(content: Text('清理已完成，但部分软件未能自动重新打开')),
+            );
+          }
+        }
+      }
       if (mounted && state.lastCleanAt != before) {
         setState(() {
           if (_focusedCategory != null &&
@@ -577,11 +777,11 @@ class _CategoryCardState extends State<_CategoryCard> {
         ? 0.0
         : (category.totalSizeBytes / state.totalFoundBytes).clamp(0.0, 1.0);
     final color = category.error != null
-        ? AppColors.warning
+        ? CosmicColors.warning
         : category.items.isEmpty
         ? AppColors.success
         : !category.category.defaultSelected
-        ? AppColors.warning
+        ? CosmicColors.warning
         : CosmicColors.cyan;
     return AnimatedContainer(
       duration: cleanMotion(context, 180),
@@ -609,8 +809,11 @@ class _CategoryCardState extends State<_CategoryCard> {
                   'category-${category.category.name}-${widget.initiallyExpanded}',
                 ),
                 initiallyExpanded: widget.initiallyExpanded,
-                onExpansionChanged: (value) =>
-                    setState(() => _expanded = value),
+                onExpansionChanged: (value) {
+                  if (_expanded != value) {
+                    setState(() => _expanded = value);
+                  }
+                },
                 tilePadding: const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 8,
@@ -649,7 +852,7 @@ class _CategoryCardState extends State<_CategoryCard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '${category.items.length} 项 · ${category.category.subtitle}',
+                        '${category.items.length} 项 · ${category.items.fold<int>(0, (n, i) => n + i.fileCount + i.blockedFileCount)} 个文件 · ${category.category.subtitle}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -680,7 +883,7 @@ class _CategoryCardState extends State<_CategoryCard> {
                             Expanded(
                               child: Text(
                                 category.error != null
-                                    ? '部分位置未读取'
+                                    ? category.diagnosticLabel
                                     : category.items.isEmpty
                                     ? '已检查，未发现可清理内容'
                                     : '需手动确认',
@@ -731,12 +934,34 @@ class _CategoryCardState extends State<_CategoryCard> {
                   if (category.error != null)
                     Padding(
                       padding: const EdgeInsets.all(12),
-                      child: Text(
-                        category.error!,
-                        style: const TextStyle(
-                          color: AppColors.warning,
-                          fontSize: 12,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: IconButton(
+                              tooltip: '复制扫描诊断',
+                              onPressed: () => Clipboard.setData(
+                                ClipboardData(text: category.error!),
+                              ),
+                              icon: const Icon(
+                                Icons.copy_all_outlined,
+                                color: CosmicColors.cyan,
+                                size: 18,
+                              ),
+                            ),
+                          ),
+                          SelectableText(
+                            category.error!,
+                            key: PageStorageKey(
+                              'scan-diagnostics-${category.category.name}',
+                            ),
+                            style: const TextStyle(
+                              color: CosmicColors.warning,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   if (category.items.isEmpty)
@@ -754,7 +979,7 @@ class _CategoryCardState extends State<_CategoryCard> {
                     for (final item in category.items)
                       _ItemRow(
                         item: item,
-                        enabled: !busy,
+                        enabled: !busy && item.hasCleanableFiles,
                         onToggle: () => state.toggleItem(item),
                         onShowMenu: (position) =>
                             _showItemMenu(context, state, item, position),
@@ -951,6 +1176,14 @@ class _ItemRow extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 2),
+                    if (item.blockedFileCount > 0)
+                      Text(
+                        '可清理 ${formatBytes(item.sizeBytes)} · 暂不可清理 ${formatBytes(item.blockedSizeBytes)}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: CosmicColors.warning,
+                        ),
+                      ),
                     Text(
                       item.path,
                       maxLines: 1,
@@ -987,7 +1220,9 @@ class _ItemRow extends StatelessWidget {
               SizedBox(
                 width: 64,
                 child: Text(
-                  item.fileCount > 0 ? '${item.fileCount} 文件' : '—',
+                  item.fileCount + item.blockedFileCount > 0
+                      ? '${item.fileCount + item.blockedFileCount} 文件'
+                      : '—',
                   textAlign: TextAlign.right,
                   style: const TextStyle(
                     color: AppColors.textTertiary,
@@ -996,7 +1231,7 @@ class _ItemRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              SizedBox(width: 72, child: SizeText(item.sizeBytes)),
+              SizedBox(width: 72, child: SizeText(item.detectedSizeBytes)),
             ],
           ),
         ),
@@ -1020,6 +1255,60 @@ class _MenuRow extends StatelessWidget {
         const SizedBox(width: 10),
         Text(label, style: TextStyle(fontSize: 13, color: color)),
       ],
+    );
+  }
+}
+
+/// Group totals describe discovered content; the bottom bar remains selected bytes.
+class _CleanupSectionHeader extends StatelessWidget {
+  const _CleanupSectionHeader({
+    required this.section,
+    required this.categories,
+  });
+  final CleanupSection section;
+  final List<ScanCategory> categories;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = categories.fold<int>(
+      0,
+      (sum, entry) =>
+          sum + entry.items.fold<int>(0, (size, item) => size + item.sizeBytes),
+    );
+    final icon = switch (section) {
+      CleanupSection.caches => Icons.layers_outlined,
+      CleanupSection.diagnostics => Icons.receipt_long_outlined,
+      CleanupSection.personal => Icons.folder_open_rounded,
+      CleanupSection.maintenance => Icons.build_outlined,
+    };
+    return Padding(
+      key: ValueKey('cleanup-section-${section.name}'),
+      padding: const EdgeInsets.only(top: 12, bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: CosmicColors.cyan),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  section.title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Text(
+                formatBytes(bytes),
+                style: const TextStyle(color: CosmicColors.muted, fontSize: 12),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

@@ -28,18 +28,13 @@ void main() {
     expect(find.text('CleanWin'), findsWidgets);
     expect(find.text('概览与清理'), findsWidgets);
     expect(find.byKey(const ValueKey('nav-1')), findsNothing);
-    expect(find.text('磁盘分析'), findsWidgets);
-    expect(find.text('大文件'), findsWidgets);
-    expect(find.text('运行监控'), findsWidgets);
-    expect(find.text('软件卸载'), findsWidgets);
-    expect(find.text('启动项'), findsWidgets);
-    await tester.drag(
-      find.byKey(const ValueKey('sidebar-navigation')),
-      const Offset(0, -400),
-    );
-    await tester.pump();
-    expect(find.text('注册表'), findsWidgets);
-    expect(find.text('下载管理'), findsWidgets);
+    expect(find.text('文件管理'), findsWidgets);
+    expect(find.text('系统监控'), findsWidgets);
+    expect(find.text('应用管理'), findsWidgets);
+    expect(find.text('系统维护'), findsWidgets);
+    expect(find.byKey(const ValueKey('nav-3')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-6')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-8')), findsNothing);
     expect(find.text('白名单'), findsWidgets);
     expect(find.text('设置'), findsWidgets);
     expect(find.text('为你的电脑\n释放一片星空'), findsOneWidget);
@@ -99,7 +94,16 @@ void main() {
       await tester.dragFrom(const Offset(600, 400), const Offset(0, -90));
       await tester.pumpAndSettle();
       expect(methods, isNot(contains('startDrag')));
-      await tester.tap(find.byKey(const ValueKey('nav-3')));
+      await tester.tap(find.byKey(const ValueKey('nav-2')));
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 300)),
+      );
+      await tester.tap(find.text('大文件'));
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 300)),
+      );
       await tester.pumpAndSettle();
       methods.clear();
       await tester.tap(find.byTooltip('切换磁盘'));

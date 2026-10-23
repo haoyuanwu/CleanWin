@@ -178,6 +178,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      final summaryHeight = tester
+          .getSize(find.byKey(const ValueKey('download-summary-bar')))
+          .height;
+      final listHeight = tester
+          .getSize(find.byKey(const ValueKey('download-list-panel')))
+          .height;
+      expect(summaryHeight, 58);
+      expect(listHeight, greaterThan(summaryHeight * 7));
       expect(
         find.byKey(const ValueKey(r'download-folder-C:\Downloads')),
         findsOneWidget,

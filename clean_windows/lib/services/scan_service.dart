@@ -5,8 +5,10 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'cache_discovery.dart';
+import 'cleanup_rules.dart';
 import 'file_safety.dart';
 import 'file_operability.dart';
+import 'scan_diagnostics.dart';
 import 'download_discovery.dart';
 
 import '../models/clean_models.dart';
@@ -23,15 +25,34 @@ class ScanService {
     this.driveRoots,
     PowerShellRunner? powerShellRunner,
     Future<Set<String>> Function(List<String>)? operabilityProbe,
+    Future<FileOperabilityReport> Function(List<String>)? accessProbe,
   }) : _environment = environment ?? Platform.environment,
 
        _runPowerShell = powerShellRunner ?? runPowerShell,
-       _operabilityProbe = operabilityProbe ?? operableCleanupPaths;
+       _accessProbe =
+           accessProbe ??
+           (operabilityProbe == null
+               ? inspectCleanupPaths
+               : (paths) async {
+                   final allowed = await operabilityProbe(paths);
+                   return FileOperabilityReport(
+                     allowed: allowed,
+                     blocked: {
+                       for (final path in paths)
+                         if (!allowed.contains(path))
+                           path: const CleanupPathBlock(
+                             CleanupBlockReason.unavailable,
+                           ),
+                     },
+                   );
+                 });
 
   final List<String>? driveRoots;
   final PowerShellRunner _runPowerShell;
-  final Future<Set<String>> Function(List<String>) _operabilityProbe;
+  final Future<FileOperabilityReport> Function(List<String>) _accessProbe;
+  bool temporaryOnly = false;
   bool _oneClick = false;
+  bool _spaceReview = false;
   List<String>? _resolvedDriveRoots;
   CleanCancellation? cancellation;
   void Function(int, int, String)? _onPermissionProgress;
@@ -48,12 +69,18 @@ class ScanService {
 
   final Map<String, String> _environment;
   final Set<String> _scannedPaths = {};
-  final Set<String> _scanIssues = {};
+  List<String>? _specializedCacheRoots;
+  final Set<String> _scanNotices = {};
+  final Map<String, FileSystemException> _readFailures = {};
+  final Set<String> _inUseReadPaths = {};
   void Function(String path)? _onScanPath;
 
   void _recordScanIssue(FileSystemException error) {
     if ({2, 3}.contains(error.osError?.errorCode)) return;
-    _scanIssues.add(error.path ?? '未知路径');
+    if ({32, 33}.contains(error.osError?.errorCode) && error.path != null) {
+      _inUseReadPaths.add(diagnosticPath(error.path!));
+    }
+    _readFailures[diagnosticPath(error.path ?? '未知路径')] = error;
   }
 
   String get localAppData =>
@@ -80,11 +107,12 @@ class ScanService {
   }) async {
     if (whitelist?.readable == false) throw StateError(whitelist!.lastError!);
     _scannedPaths.clear();
+    _specializedCacheRoots = null;
     _resolvedDriveRoots = null;
-    _oneClick = categories == null;
+    _spaceReview = isSpaceCleanupScope(categories);
+    _oneClick = categories == null || _spaceReview || temporaryOnly;
     // Specialized categories own their files before generic cache discovery.
     const order = [
-      CleanCategory.memoryDumps,
       CleanCategory.nvidiaCache,
       CleanCategory.windowsUpdate,
       CleanCategory.systemCache,
@@ -182,6 +210,9 @@ class ScanService {
           items: filtered,
           scanDuration: sw.elapsed,
           error: result.error,
+          unreadableCount: result.unreadableCount,
+          blockedFileCount: result.blockedFileCount,
+          inUsePaths: result.inUsePaths,
         );
         results[cat] = filteredResult;
         foundBytes += filteredResult.totalSizeBytes;
@@ -214,7 +245,9 @@ class ScanService {
   }
 
   Future<ScanCategory> _scanCategory(CleanCategory cat) async {
-    _scanIssues.clear();
+    _scanNotices.clear();
+    _readFailures.clear();
+    _inUseReadPaths.clear();
     final sw = Stopwatch()..start();
     List<CleanItem> items;
     switch (cat) {
@@ -249,10 +282,9 @@ class ScanService {
       category: cat,
       items: items,
       scanDuration: sw.elapsed,
-      error: _scanIssues.isEmpty
-          ? null
-          : '有 ${_scanIssues.length} 个位置无法完整读取，结果仅包含可访问的文件。'
-                '\n${_scanIssues.take(5).join('\n')}',
+      error: readDiagnostics(_readFailures, _scanNotices),
+      unreadableCount: _readFailures.length,
+      inUsePaths: List.unmodifiable(_inUseReadPaths),
     );
   }
 
@@ -266,12 +298,13 @@ class ScanService {
     };
     final paths = candidates.toList();
     final allowed = <String>{};
-    var checked = 0;
+    final blocked = <String, CleanupPathBlock>{};
     for (var offset = 0; offset < paths.length; offset += 256) {
       if (_cancelled) break;
       final end = (offset + 256).clamp(0, paths.length);
-      allowed.addAll(await _operabilityProbe(paths.sublist(offset, end)));
-      checked = end;
+      final report = await _accessProbe(paths.sublist(offset, end));
+      allowed.addAll(report.allowed);
+      blocked.addAll(report.blocked);
       _onPermissionProgress?.call(end, paths.length, paths[end - 1]);
     }
     final items = <CleanItem>[];
@@ -283,7 +316,26 @@ class ScanService {
       final files = (item.scannedFiles ?? const <String>[])
           .where(allowed.contains)
           .toList();
-      if (files.isEmpty) continue;
+      final observedBlocked = (item.scannedFiles ?? const <String>[])
+          .where(
+            (path) =>
+                blocked.containsKey(path) &&
+                blocked[path]!.reason != CleanupBlockReason.disappeared,
+          )
+          .toList();
+      final inUseBlocked = observedBlocked
+          .where((path) => blocked[path]!.reason == CleanupBlockReason.inUse)
+          .toList();
+      if (files.isEmpty && observedBlocked.isEmpty) continue;
+      final blockedBytes = observedBlocked.fold<int>(
+        0,
+        (sum, path) =>
+            sum +
+            (int.tryParse(
+                  (item.fileSignatures?[path] ?? '').split(':').first,
+                ) ??
+                0),
+      );
       final signatures = <String, String>{
         for (final path in files)
           if (item.fileSignatures?[path] != null)
@@ -303,7 +355,10 @@ class ScanService {
           fileCount: files.length,
           scannedFiles: List.unmodifiable(files),
           fileSignatures: Map.unmodifiable(signatures),
-          selected: item.selected,
+          selected: item.selected && files.isNotEmpty,
+          blockedSizeBytes: blockedBytes,
+          blockedFileCount: observedBlocked.length,
+          blockedFiles: List.unmodifiable(inUseBlocked),
           note: item.note,
           appName: item.appName,
           iconPath: item.iconPath,
@@ -312,15 +367,72 @@ class ScanService {
     }
     final notices = [
       if (result.error?.isNotEmpty == true) result.error!,
-      if (checked > allowed.length)
-        '已跳过 ${checked - allowed.length} 个当前不可操作的文件（可能被占用、只读或权限不足）。',
+      if (cleanupDiagnostics(blocked) case final String diagnostics)
+        diagnostics,
     ];
     return ScanCategory(
       category: result.category,
       items: items,
       scanDuration: result.scanDuration,
       error: notices.isEmpty ? null : notices.join('\n'),
+      unreadableCount: result.unreadableCount,
+      blockedFileCount: blocked.length,
+      inUsePaths: List.unmodifiable({
+        ...result.inUsePaths,
+        for (final item in items) ...item.blockedFiles,
+      }),
     );
+  }
+
+  Future<List<CleanItem>> _scanRule(FileCleanupRule rule) async {
+    final root = switch (rule.root) {
+      CleanupRoot.local => localAppData,
+      CleanupRoot.roaming => roamingAppData,
+      CleanupRoot.windows => windowsDir,
+    };
+    final items = <CleanItem>[];
+    for (final relative in rule.locations) {
+      if (_cancelled) break;
+      final path = relative.isEmpty
+          ? root
+          : p.joinAll([root, ...relative.split('/')]);
+      final item = await _dirItem(
+        id: 'rule_${rule.id}_$path',
+        name: rule.name,
+        appName: rule.category == CleanCategory.appCache ? rule.name : null,
+        path: path,
+        category: rule.category,
+        nameFilter: rule.accepts,
+        minAge: rule.minAge,
+        recursive: rule.recursive,
+        note: rule.note,
+      );
+      if (rule.filenames.isNotEmpty) {
+        // A single file rule must not expose its entire AppData parent as
+        // the item target (including Explorer and whitelist actions).
+        for (final file in item.scannedFiles ?? const <String>[]) {
+          final signature = item.fileSignatures?[file];
+          if (signature == null) continue;
+          items.add(
+            CleanItem(
+              id: 'rule_${rule.id}_$file',
+              name: rule.name,
+              path: file,
+              category: rule.category,
+              sizeBytes: int.tryParse(signature.split(':').first) ?? 0,
+              fileCount: 1,
+              selected: rule.category.defaultSelected,
+              note: rule.note,
+              scannedFiles: [file],
+              fileSignatures: {file: signature},
+            ),
+          );
+        }
+      } else if (item.fileCount > 0) {
+        items.add(item);
+      }
+    }
+    return items;
   }
 
   // ---------- 各分类扫描 ----------
@@ -328,45 +440,63 @@ class ScanService {
   /// Discover disposable caches across vendors, nested profiles and Store apps.
   Future<List<CleanItem>> _scanAppCaches() async {
     final items = <CleanItem>[];
-    if (_oneClick && !options.deepScan) {
-      for (final relative in [
-        'Code/Cache',
-        'Discord/Cache',
-        'Slack/Cache',
-        'Spotify/Cache',
-        'Microsoft/Teams/Cache',
-      ]) {
-        if (_cancelled) break;
-        for (final root in [localAppData, roamingAppData]) {
-          final path = p.joinAll([root, ...relative.split('/')]);
-          final item = await _dirItem(
-            id: 'appcache_$path',
-            name: relative.split('/').first,
-            path: path,
-            category: CleanCategory.appCache,
-            note: '已知软件缓存；清理后可能需要重新加载',
-          );
-          if (item.fileCount > 0) items.add(item);
-        }
+    for (final rule in softwareCacheRules) {
+      items.addAll(await _scanRule(rule));
+      if (_cancelled) return items;
+    }
+    final quickDiscovery = _oneClick && !options.deepScan;
+    for (final (appName, root) in softwareCacheProfiles(
+      localAppData,
+      roamingAppData,
+    )) {
+      await for (final cache in discoverCaches(
+        Directory(root),
+        maxDepth: 5,
+        cacheNames: quickSoftwareCacheNames,
+        includePackageTemp: false,
+        onError: _recordScanIssue,
+        onPath: _onScanPath,
+        cancelled: () => _cancelled,
+        exclude: (path) => _excluded(path, CleanCategory.appCache),
+      )) {
+        final item = await _dirItem(
+          id: 'appcache_${cache.path}',
+          name: appName,
+          appName: appName,
+          path: cache.path,
+          category: CleanCategory.appCache,
+          note: '仅此用户配置的可重建资源缓存，不含会话、离线视频和账户数据。',
+        );
+        if (item.fileCount > 0) items.add(item);
       }
-      return items;
     }
     final iconService = AppIconService();
     for (final root in {
       localAppData,
       roamingAppData,
       p.join(p.dirname(localAppData), 'LocalLow'),
-      if (!_oneClick) programData,
+      if (_spaceReview || !_oneClick) programData,
     }) {
       await for (final cache in discoverCaches(
         Directory(root),
-        maxDepth: _oneClick ? 6 : 8,
+        maxDepth: quickDiscovery ? 3 : 8,
+        profileDepth: quickDiscovery ? 3 : 0,
+        breadthFirst: quickDiscovery,
+        maxDirectories: quickDiscovery ? 2000 : null,
+        onLimit: (root) => _scanNotices.add('软件目录发现已达本轮上限，可开启深度扫描继续检查：$root'),
+        cacheNames: {
+          ...(quickDiscovery ? quickSoftwareCacheNames : disposableCacheNames),
+          'logs',
+          'log',
+        },
+        includePackageTemp: !quickDiscovery,
         onError: _recordScanIssue,
         onPath: _onScanPath,
         cancelled: () => _cancelled,
         exclude: (path) =>
             _excluded(path, CleanCategory.appCache) ||
-            _ownedBySpecializedScanner(path),
+            _ownedBySpecializedScanner(path) ||
+            systemServiceDataPath(path, programData),
       )) {
         final relative = p.relative(cache.path, from: root);
         final parts = p.split(relative);
@@ -374,12 +504,45 @@ class ScanService {
             parts.first.toLowerCase() == 'packages' && parts.length > 1
             ? parts[1]
             : parts.first;
+        final isLog = {
+          'log',
+          'logs',
+        }.contains(p.basename(cache.path).toLowerCase());
+        if (isLog &&
+            p
+                .split(cache.path)
+                .any(
+                  (part) => const {
+                    'wechat',
+                    'weixin',
+                    'xwechat',
+                    'qq',
+                    'qqnt',
+                    'wxwork',
+                    'telegram desktop',
+                    'whatsapp',
+                    'signal',
+                  }.contains(part.toLowerCase()),
+                )) {
+          continue; // Messenger logs can contain personal conversation records.
+        }
+
         final item = await _dirItem(
           id: 'appcache_${cache.path}',
-          name: appName,
+          name: isLog ? '$appName · 旧日志' : appName,
+          minAge: isLog ? const Duration(days: 7) : null,
+          nameFilter: isLog
+              ? (name) => {
+                  '.log',
+                  '.old',
+                  '.etl',
+                }.contains(p.extension(name).toLowerCase())
+              : null,
           path: cache.path,
           category: CleanCategory.appCache,
-          note: relative,
+          note: isLog
+              ? '仅七天前的诊断日志；不含配置、会话和个人文件。位置：$relative'
+              : '可重建资源缓存；清理后首次打开可能需要重新加载。位置：$relative',
           appName: appName,
         );
         if (item.fileCount == 0) continue;
@@ -418,9 +581,14 @@ class ScanService {
         name: 'Windows 临时文件',
         path: '$windowsDir\\Temp',
         category: CleanCategory.systemCache,
-        minAge: const Duration(days: 1),
+        minAge: Duration(days: temporaryOnly ? 7 : 1),
+        nameFilter: temporaryOnly ? isConservativeTemporaryFile : null,
       ),
     );
+
+    if (temporaryOnly) {
+      return items.where((item) => item.fileCount > 0).toList();
+    }
 
     // Prefetch
     if (options.cleanPrefetch) {
@@ -434,6 +602,12 @@ class ScanService {
       );
     }
 
+    for (final rule in additionalSystemRules.where(
+      (r) => r.id == 'thumb_pending' || r.id == 'icon_pending',
+    )) {
+      items.addAll(await _scanRule(rule));
+    }
+
     // 缩略图 / 图标缓存
     items.add(
       await _dirItem(
@@ -443,8 +617,9 @@ class ScanService {
         category: CleanCategory.systemCache,
         nameFilter: (name) {
           final n = name.toLowerCase();
-          return n.startsWith('thumbcache_');
+          return n.startsWith('thumbcache_') && n.endsWith('.db');
         },
+        recursive: false,
       ),
     );
 
@@ -455,7 +630,10 @@ class ScanService {
         name: '系统图标缓存',
         path: '$localAppData\\Microsoft\\Windows\\Explorer',
         category: CleanCategory.systemCache,
-        nameFilter: (name) => name.toLowerCase().startsWith('iconcache'),
+        nameFilter: (name) =>
+            name.toLowerCase().startsWith('iconcache') &&
+            name.toLowerCase().endsWith('.db'),
+        recursive: false,
       ),
     );
 
@@ -466,10 +644,25 @@ class ScanService {
         name: '字体缓存',
         path: '$windowsDir\\ServiceProfiles\\LocalService\\AppData\\Local',
         category: CleanCategory.systemCache,
+        recursive: false,
         nameFilter: (name) {
           final n = name.toLowerCase();
-          return n.startsWith('fontcache') ||
-              n.endsWith('.dat') && n.contains('font');
+          return n.endsWith('.dat') &&
+              (n.startsWith('fontcache') || n == 'gdipfontcachev1.dat');
+        },
+      ),
+    );
+    // The sibling Ngc/Credentials folders are security data, not font caches.
+    items.add(
+      await _dirItem(
+        id: 'font_cache_service',
+        name: '字体缓存（系统服务）',
+        path:
+            '$windowsDir\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache',
+        category: CleanCategory.systemCache,
+        nameFilter: (name) {
+          final lower = name.toLowerCase();
+          return lower.endsWith('.dat') && lower.startsWith('fontcache');
         },
       ),
     );
@@ -523,7 +716,8 @@ class ScanService {
       await _dirItem(
         id: 'wer_local',
         name: 'Windows 错误报告（用户）',
-        path: '$localAppData\\Microsoft\\Windows\\WER',
+        path: '$localAppData\\Microsoft\\Windows\\WER\\ReportArchive',
+        minAge: const Duration(days: 7),
         category: CleanCategory.systemCache,
       ),
     );
@@ -531,10 +725,24 @@ class ScanService {
       await _dirItem(
         id: 'wer_programdata',
         name: 'Windows 错误报告（系统）',
-        path: '$programData\\Microsoft\\Windows\\WER',
+        path: '$programData\\Microsoft\\Windows\\WER\\ReportArchive',
+        minAge: const Duration(days: 7),
         category: CleanCategory.systemCache,
       ),
     );
+
+    for (final (label, root) in [('用户', localAppData), ('系统', programData)]) {
+      items.add(
+        await _dirItem(
+          id: 'wer_queue_$root',
+          name: 'Windows 待发送错误报告（$label）',
+          path: p.join(root, 'Microsoft', 'Windows', 'WER', 'ReportQueue'),
+          category: CleanCategory.systemCache,
+          minAge: const Duration(days: 7),
+          note: '仅七天前的待发送诊断报告；删除后无法发送这些报告。',
+        ),
+      );
+    }
 
     // Environment temp may be redirected outside AppData.
     for (final temp in {_environment['TEMP'], _environment['TMP']}) {
@@ -546,7 +754,7 @@ class ScanService {
         windowsDir,
         programData,
       ].any((root) => p.equals(temp, root) || p.isWithin(temp, root))) {
-        _scanIssues.add('临时目录配置指向过大的范围，已跳过：$temp');
+        _scanNotices.add('临时目录配置指向过大的范围，已跳过：$temp');
         continue;
       }
       items.add(
@@ -596,35 +804,37 @@ class ScanService {
         ),
       );
     }
+    for (final rule in additionalSystemRules) {
+      items.addAll(await _scanRule(rule));
+    }
     return items.where((i) => i.sizeBytes > 0 || i.fileCount > 0).toList();
   }
 
-  List<(String, String)> get _browserRoots => [
-    ('Chrome', p.join(localAppData, 'Google', 'Chrome', 'User Data')),
-    ('Chrome Beta', p.join(localAppData, 'Google', 'Chrome Beta', 'User Data')),
-    ('Chrome Dev', p.join(localAppData, 'Google', 'Chrome Dev', 'User Data')),
-    (
-      'Chrome Canary',
-      p.join(localAppData, 'Google', 'Chrome SxS', 'User Data'),
-    ),
-    ('Edge', p.join(localAppData, 'Microsoft', 'Edge', 'User Data')),
-    ('Edge Beta', p.join(localAppData, 'Microsoft', 'Edge Beta', 'User Data')),
-    ('Edge Dev', p.join(localAppData, 'Microsoft', 'Edge Dev', 'User Data')),
-    ('Edge Canary', p.join(localAppData, 'Microsoft', 'Edge SxS', 'User Data')),
-    ('Firefox', p.join(localAppData, 'Mozilla', 'Firefox', 'Profiles')),
-    (
-      'Brave',
-      p.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data'),
-    ),
-    ('Chromium', p.join(localAppData, 'Chromium', 'User Data')),
-    ('Vivaldi', p.join(localAppData, 'Vivaldi', 'User Data')),
-    ('Opera', p.join(localAppData, 'Opera Software')),
-    ('Opera', p.join(roamingAppData, 'Opera Software')),
-  ];
+  List<(String, String)> get _browserRoots =>
+      browserProfileRoots(localAppData, roamingAppData);
 
   bool _ownedBySpecializedScanner(String path) {
-    final roots = [
+    final roots = _specializedCacheRoots ??= [
       ..._browserRoots.map((entry) => entry.$2),
+      ...softwareCacheProfiles(
+        localAppData,
+        roamingAppData,
+      ).map((entry) => entry.$2),
+      // A generic cache-name pass must not broaden an explicitly filtered rule.
+      for (final rule in [
+        ...softwareCacheRules,
+        ...additionalSystemRules,
+        ...additionalLogRules,
+      ])
+        for (final leaf in rule.locations.where((leaf) => leaf.isNotEmpty))
+          p.joinAll([
+            switch (rule.root) {
+              CleanupRoot.local => localAppData,
+              CleanupRoot.roaming => roamingAppData,
+              CleanupRoot.windows => windowsDir,
+            },
+            ...leaf.split('/'),
+          ]),
       p.join(localAppData, 'NVIDIA'),
       p.join(localAppData, 'NVIDIA Corporation'),
       p.join(programData, 'NVIDIA Corporation', 'NV_Cache'),
@@ -644,7 +854,11 @@ class ScanService {
         await _browserProfiles(
           root: root,
           browserName: name,
-          cacheDirs: name == 'Firefox' ? const ['thumbnails'] : const [],
+          cacheDirs: name == 'Firefox'
+              ? const ['thumbnails']
+              : name == 'QQ浏览器'
+              ? const ['webkit_cache']
+              : const [],
           category: CleanCategory.browserCache,
         ),
       );
@@ -783,6 +997,21 @@ class ScanService {
         category: CleanCategory.systemLogs,
       ),
     );
+    for (final rule in additionalLogRules) {
+      items.addAll(await _scanRule(rule));
+    }
+    // IIS logs are opt-in through the logs category; only old .log files.
+    items.add(
+      await _dirItem(
+        id: 'iis_logs',
+        name: 'IIS 站点日志',
+        path: p.join(systemDriveRoot, 'inetpub', 'logs', 'LogFiles'),
+        category: CleanCategory.systemLogs,
+        nameFilter: (name) => p.extension(name).toLowerCase() == '.log',
+        minAge: const Duration(days: 30),
+        note: '仅三十天前的站点日志；服务器审计需要时请保留。',
+      ),
+    );
     return items.where((i) => i.sizeBytes > 0).toList();
   }
 
@@ -810,7 +1039,7 @@ class ScanService {
         name: '回收站 · $root',
         path: p.join(root, r'$Recycle.Bin', sid),
         category: CleanCategory.recycleBin,
-        note: '手动选择；清空后无法从回收站恢复',
+        note: '默认选择；清空后无法从回收站恢复，执行前仍会再次确认',
       );
       if (item.fileCount > 0) items.add(item);
     }
@@ -910,7 +1139,7 @@ ConvertTo-Json -InputObject @($roots) -Compress
     try {
       roots = await _readyDriveRoots();
     } on Exception {
-      _scanIssues.add('部分磁盘未能枚举，下载结果仅包含已定位目录');
+      _scanNotices.add('部分磁盘未能枚举，下载结果仅包含已定位目录');
     }
     final locations = await DownloadDiscovery(
       _environment,
@@ -933,7 +1162,27 @@ ConvertTo-Json -InputObject @($roots) -Compress
           recursive: location.recursive,
           note: '仅下载包，不含配置和未完成下载；手动选择后移入回收站',
         );
-        if (item.fileCount > 0) items.add(item);
+        // Individual package snapshots keep type/age filters and right-click
+        // actions accurate even when a manager folder contains mixed files.
+        for (final path in item.scannedFiles ?? const <String>[]) {
+          final signature = item.fileSignatures?[path];
+          if (signature == null) continue;
+          items.add(
+            CleanItem(
+              id: 'dl_$path',
+              name: p.basename(path),
+              path: path,
+              category: CleanCategory.downloads,
+              appName: location.source,
+              sizeBytes: int.tryParse(signature.split(':').first) ?? 0,
+              fileCount: 1,
+              selected: false,
+              scannedFiles: [path],
+              fileSignatures: {path: signature},
+              note: '软件下载包；手动选择后移入回收站。',
+            ),
+          );
+        }
         continue;
       }
       final dir = Directory(location.path);
@@ -948,7 +1197,7 @@ ConvertTo-Json -InputObject @($roots) -Compress
             path: child.path,
             category: CleanCategory.downloads,
           );
-          if (item.sizeBytes >= 10 * 1024 * 1024) items.add(item);
+          if (item.fileCount > 0) items.add(item);
         } else if (child is Directory) {
           final item = await _dirItem(
             id: 'dl_dir_${child.path}',
@@ -956,7 +1205,7 @@ ConvertTo-Json -InputObject @($roots) -Compress
             path: child.path,
             category: CleanCategory.downloads,
           );
-          if (item.sizeBytes >= 10 * 1024 * 1024) {
+          if (item.fileCount > 0) {
             item.selected = false;
             items.add(item);
           }
@@ -1002,8 +1251,9 @@ ConvertTo-Json -InputObject @($roots) -Compress
       ),
     );
     for (final root in [
-      p.join(localAppData, 'Microsoft', 'Windows', 'WER'),
-      p.join(programData, 'Microsoft', 'Windows', 'WER'),
+      for (final root in [localAppData, programData])
+        for (final leaf in ['ReportArchive', 'ReportQueue'])
+          p.join(root, 'Microsoft', 'Windows', 'WER', leaf),
     ]) {
       items.add(
         await _dirItem(
@@ -1209,7 +1459,7 @@ $folder.Self.Path
 ''', const Duration(seconds: 10));
     final path = result.stdout.trim();
     if (result.success && p.isAbsolute(path)) return path;
-    if (!result.success) _scanIssues.add('下载目录定位失败，使用用户默认目录');
+    if (!result.success) _scanNotices.add('下载目录定位失败，使用用户默认目录');
     return p.join(userHome, 'Downloads');
   }
 
@@ -1221,7 +1471,7 @@ $folder.Self.Path
       return true;
     }
     if (whitelist?.isWhitelisted(path) ?? false) return true;
-    if (_oneClick) {
+    if (_oneClick && !_spaceReview && !temporaryOnly) {
       for (final root in [
         windowsDir,
         programData,
@@ -1289,13 +1539,19 @@ $folder.Self.Path
       final file = entity as File;
       if (nameFilter != null && !nameFilter(p.basename(file.path))) continue;
       if (_oneClick &&
-          automaticallySelectCleanupItem(category, id) &&
+          isConservativeTemporaryItem(category, id) &&
           !isConservativeTemporaryFile(file.path)) {
         continue;
       }
       final extension = p.extension(file.path).toLowerCase();
-      if (category == CleanCategory.memoryDumps &&
-          !{'.dmp', '.mdmp', '.hdmp'}.contains(extension)) {
+      final isDump = {'.dmp', '.mdmp', '.hdmp'}.contains(extension);
+      if (isDump &&
+          category != CleanCategory.memoryDumps &&
+          category != CleanCategory.recycleBin &&
+          category != CleanCategory.downloads) {
+        continue;
+      }
+      if (category == CleanCategory.memoryDumps && !isDump) {
         continue;
       }
       if (category == CleanCategory.systemLogs &&
@@ -1306,9 +1562,11 @@ $folder.Self.Path
       if (_scannedPaths.contains(key)) continue;
       try {
         final stat = await file.stat();
+        if (stat.type != FileSystemEntityType.file) continue;
         final age =
             minAge ??
-            (category == CleanCategory.systemLogs
+            (category == CleanCategory.systemLogs ||
+                    (category == CleanCategory.memoryDumps && _oneClick)
                 ? const Duration(days: 7)
                 : null);
         if (age != null && DateTime.now().difference(stat.modified) < age) {
@@ -1334,10 +1592,7 @@ $folder.Self.Path
       fileCount: count,
       scannedFiles: List.unmodifiable(scannedFiles),
       fileSignatures: Map.unmodifiable(signatures),
-      selected:
-          automaticallySelectCleanupItem(category, id) &&
-          scannedFiles.isNotEmpty &&
-          scannedFiles.every(isConservativeTemporaryFile),
+      selected: category.defaultSelected && scannedFiles.isNotEmpty,
       note: note,
       appName: appName,
     );
@@ -1369,9 +1624,15 @@ $folder.Self.Path
     if (!_scannedPaths.contains(key)) {
       try {
         final stat = await file.stat();
-        size = stat.size;
-        signature = fileSignature(stat);
-        _scannedPaths.add(key);
+        if (stat.type == FileSystemEntityType.file &&
+            !(category == CleanCategory.memoryDumps &&
+                _oneClick &&
+                DateTime.now().difference(stat.modified) <
+                    const Duration(days: 7))) {
+          size = stat.size;
+          signature = fileSignature(stat);
+          _scannedPaths.add(key);
+        }
       } on FileSystemException catch (error) {
         _recordScanIssue(error);
       }
@@ -1382,9 +1643,9 @@ $folder.Self.Path
       path: path,
       sizeBytes: size,
       category: category,
-      fileCount: size > 0 ? 1 : 0,
+      fileCount: signature == null ? 0 : 1,
       selected: category.defaultSelected,
-      scannedFiles: _scannedPaths.contains(key) && size > 0 ? [path] : const [],
+      scannedFiles: signature == null ? const [] : [path],
       fileSignatures: signature == null ? null : {path: signature},
       note: note,
     );

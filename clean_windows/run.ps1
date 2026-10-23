@@ -1,3 +1,5 @@
+#Requires -RunAsAdministrator
+
 # CleanWin 本地运行脚本
 # 修复：部分环境缺少 ProgramFiles(x86) 导致 flutter build/run 失败
 # 以及 exe 被占用导致 LNK1104

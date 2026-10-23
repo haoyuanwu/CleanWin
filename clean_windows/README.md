@@ -54,3 +54,12 @@ flutter test --dart-define=UI_PREVIEWS=true
 ~~~
 
 最后一项在本机 Windows 字体可用时导出页面预览到 .dart_tool/ui_previews。文件操作测试仅使用隔离目录；卸载、注册表操作采用模拟执行器和脚本解析验证。
+
+
+## 安装与管理员权限
+
+CleanWin 的安装、卸载和程序运行均要求管理员权限。普通启动时由 Windows UAC 请求授权，不同意则不启动。安装到 Program Files，快捷方式和直接打开 EXE 都使用相同权限要求。
+
+开发调试请以管理员身份运行 Flutter Manager 或终端；`run.ps1` 会检查该要求。原生清单变更需重新构建，热重载或热重启不会改变已有进程权限。
+
+Windows Release 构建完成后，安装 Inno Setup 6.3+，运行 `powershell -File scripts/package-windows.ps1` 生成安装包。脚本先验证构建 EXE 的嵌入式管理员清单。完整说明见 [安装与运行权限](docs/ADMIN_SCAN.md)。

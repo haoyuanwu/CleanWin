@@ -10,49 +10,49 @@ class ModulePalette {
 
   static ModulePalette forIndex(int index) => switch (index) {
     2 => const ModulePalette(
-      Color(0xFF2563EB),
-      Color(0xFFE7F0FC),
-      Color(0xFFF3F7FE),
+      Color(0xFF3E6582),
+      Color(0xFFEDF2F5),
+      Color(0xFFF5F8F9),
     ),
     3 => const ModulePalette(
-      Color(0xFF7C3AED),
-      Color(0xFFEFE7FA),
-      Color(0xFFF8F4FE),
+      Color(0xFF59677E),
+      Color(0xFFF0F1F5),
+      Color(0xFFF7F8FA),
     ),
     4 => const ModulePalette(
-      Color(0xFF008574),
-      Color(0xFFE0F2EA),
-      Color(0xFFF1FAF5),
+      Color(0xFF276D65),
+      Color(0xFFEDF3F1),
+      Color(0xFFF5F9F7),
     ),
     5 => const ModulePalette(
-      Color(0xFF4668D8),
-      Color(0xFFE8EEFA),
-      Color(0xFFF4F7FD),
+      Color(0xFF4B6680),
+      Color(0xFFEEF2F5),
+      Color(0xFFF6F8FA),
     ),
     6 => const ModulePalette(
-      Color(0xFFA96112),
-      Color(0xFFF8ECD7),
-      Color(0xFFFEF9EF),
+      Color(0xFF826A43),
+      Color(0xFFF3F1ED),
+      Color(0xFFFAF9F6),
     ),
     7 => const ModulePalette(
-      Color(0xFF7050B4),
-      Color(0xFFEDE6F6),
-      Color(0xFFF8F4FD),
+      Color(0xFF68627C),
+      Color(0xFFF1EFF4),
+      Color(0xFFF9F7FA),
     ),
     8 => const ModulePalette(
-      Color(0xFF087C93),
-      Color(0xFFDFF0F3),
-      Color(0xFFF0F9FB),
+      Color(0xFF246B70),
+      Color(0xFFEDF3F3),
+      Color(0xFFF6F9F9),
     ),
     9 => const ModulePalette(
-      Color(0xFF367D4E),
-      Color(0xFFE3F0E1),
-      Color(0xFFF3F9F0),
+      Color(0xFF46715D),
+      Color(0xFFEFF3EF),
+      Color(0xFFF7FAF7),
     ),
     _ => const ModulePalette(
-      Color(0xFF52647C),
-      Color(0xFFE5EBF3),
-      Color(0xFFF3F6FA),
+      Color(0xFF526775),
+      AppColors.bg,
+      AppColors.surface,
     ),
   };
 
@@ -63,15 +63,23 @@ class ModulePalette {
   );
 }
 
-/// Native scrolling remains enabled, including menus and horizontal lists.
+/// Each list owns its controller; the overview opts out of visible scrollbars.
 class CleanScrollBehavior extends MaterialScrollBehavior {
-  const CleanScrollBehavior();
+  const CleanScrollBehavior({this.showScrollbars = true});
+  final bool showScrollbars;
   @override
   Widget buildScrollbar(
     BuildContext context,
     Widget child,
     ScrollableDetails details,
-  ) => child;
+  ) => showScrollbars
+      ? Scrollbar(
+          controller: details.controller,
+          thumbVisibility: true,
+          interactive: true,
+          child: child,
+        )
+      : child;
 }
 
 class ModuleSurface extends StatelessWidget {
@@ -84,46 +92,46 @@ class ModuleSurface extends StatelessWidget {
     final palette = ModulePalette.forIndex(index);
     final base = Theme.of(context);
     final accent = palette.accent;
-    final line = Color.lerp(accent, Colors.white, .68)!;
+    final line = Color.lerp(accent, Colors.white, .8)!;
     final soft = Color.lerp(accent, Colors.white, .93)!;
     final scheme = base.colorScheme.copyWith(
       primary: accent,
       onPrimary: Colors.white,
       primaryContainer: soft,
+      onPrimaryContainer: AppColors.textPrimary,
       secondary: accent,
-      surface: Color.lerp(palette.end, Colors.white, .8),
+      surface: Colors.white,
       outlineVariant: line,
     );
     final duration = MediaQuery.disableAnimationsOf(context)
         ? Duration.zero
-        : const Duration(milliseconds: 160);
+        : const Duration(milliseconds: 140);
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(10),
+    );
     Color foreground(Set<WidgetState> states) =>
         states.contains(WidgetState.disabled) ? AppColors.textTertiary : accent;
     Color overlay(Set<WidgetState> states) => accent.withValues(
-      alpha: states.contains(WidgetState.pressed) ? .14 : .07,
+      alpha: states.contains(WidgetState.pressed) ? .12 : .06,
     );
-    final shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(14),
+    BorderSide controlBorder(Set<WidgetState> states) => BorderSide(
+      width: states.contains(WidgetState.focused) ? 2 : 1.2,
+      color: states.contains(WidgetState.focused) ? accent : Colors.transparent,
     );
     final theme = base.copyWith(
       colorScheme: scheme,
-      hoverColor: accent.withValues(alpha: .05),
-      focusColor: accent.withValues(alpha: .1),
-      splashColor: accent.withValues(alpha: .12),
+      hoverColor: accent.withValues(alpha: .04),
+      focusColor: accent.withValues(alpha: .12),
+      splashColor: accent.withValues(alpha: .1),
       iconTheme: base.iconTheme.copyWith(color: accent),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: (base.elevatedButtonTheme.style ?? const ButtonStyle()).copyWith(
           animationDuration: duration,
-          shape: WidgetStatePropertyAll(shape),
-          minimumSize: const WidgetStatePropertyAll(Size(40, 42)),
-          backgroundColor: WidgetStateProperty.resolveWith((states) {
-            if (states.contains(WidgetState.disabled)) {
-              return Color.lerp(palette.background, Colors.white, .35);
-            }
-            return states.contains(WidgetState.pressed)
-                ? Color.lerp(accent, Colors.black, .12)
-                : accent;
-          }),
+          backgroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.disabled)
+                ? const Color(0xFFE5EBED)
+                : accent,
+          ),
           foregroundColor: WidgetStateProperty.resolveWith(
             (states) => states.contains(WidgetState.disabled)
                 ? AppColors.textTertiary
@@ -132,32 +140,31 @@ class ModuleSurface extends StatelessWidget {
           overlayColor: WidgetStatePropertyAll(
             Colors.white.withValues(alpha: .12),
           ),
-          elevation: WidgetStateProperty.resolveWith(
-            (states) =>
-                states.contains(WidgetState.hovered) &&
-                    !states.contains(WidgetState.disabled)
-                ? 3
-                : 0,
+          elevation: const WidgetStatePropertyAll(0),
+        ),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: (base.filledButtonTheme.style ?? const ButtonStyle()).copyWith(
+          animationDuration: duration,
+          backgroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.disabled)
+                ? const Color(0xFFE5EBED)
+                : accent,
           ),
-          shadowColor: WidgetStatePropertyAll(accent.withValues(alpha: .25)),
+          foregroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.disabled)
+                ? AppColors.textTertiary
+                : Colors.white,
+          ),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: (base.outlinedButtonTheme.style ?? const ButtonStyle()).copyWith(
           animationDuration: duration,
-          shape: WidgetStatePropertyAll(shape),
-          minimumSize: const WidgetStatePropertyAll(Size(40, 42)),
+          backgroundColor: WidgetStatePropertyAll(soft),
           foregroundColor: WidgetStateProperty.resolveWith(foreground),
-          backgroundColor: WidgetStatePropertyAll(
-            Colors.white.withValues(alpha: .65),
-          ),
           overlayColor: WidgetStateProperty.resolveWith(overlay),
-          side: WidgetStateProperty.resolveWith(
-            (states) => BorderSide(
-              width: 1.6,
-              color: states.contains(WidgetState.focused) ? accent : line,
-            ),
-          ),
+          side: WidgetStateProperty.resolveWith(controlBorder),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -168,41 +175,37 @@ class ModuleSurface extends StatelessWidget {
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
-        style: ButtonStyle(
+        style: (base.iconButtonTheme.style ?? const ButtonStyle()).copyWith(
           animationDuration: duration,
           foregroundColor: WidgetStateProperty.resolveWith(foreground),
           overlayColor: WidgetStateProperty.resolveWith(overlay),
           shape: WidgetStatePropertyAll(shape),
-          side: WidgetStateProperty.resolveWith(
-            (states) => BorderSide(
-              width: 1.6,
-              color: states.contains(WidgetState.focused) ? accent : line,
-            ),
-          ),
+          side: WidgetStateProperty.resolveWith(controlBorder),
         ),
       ),
       cardTheme: base.cardTheme.copyWith(
-        color: Colors.white.withValues(alpha: .88),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: line, width: 1.6),
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: line, width: 1.2),
         ),
       ),
+      listTileTheme: base.listTileTheme.copyWith(
+        selectedTileColor: soft,
+        selectedColor: AppColors.textPrimary,
+      ),
       inputDecorationTheme: base.inputDecorationTheme.copyWith(
-        fillColor: Colors.white.withValues(alpha: .85),
         prefixIconColor: accent,
         suffixIconColor: accent,
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: line, width: 1.6),
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide(color: line, width: 1.2),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(10),
           borderSide: BorderSide(color: accent, width: 2),
         ),
       ),
       checkboxTheme: base.checkboxTheme.copyWith(
-        side: BorderSide(color: line, width: 1.6),
         fillColor: WidgetStateProperty.resolveWith(
           (states) =>
               states.contains(WidgetState.selected) ? accent : Colors.white,
@@ -212,7 +215,7 @@ class ModuleSurface extends StatelessWidget {
         trackColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
               ? accent
-              : AppColors.textTertiary.withValues(alpha: .35),
+              : const Color(0xFF8A9AA3),
         ),
       ),
       progressIndicatorTheme: base.progressIndicatorTheme.copyWith(
@@ -220,11 +223,9 @@ class ModuleSurface extends StatelessWidget {
         linearTrackColor: soft,
       ),
       popupMenuTheme: base.popupMenuTheme.copyWith(
-        color: scheme.surface,
-        surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: BorderSide(color: line, width: 1.6),
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: line),
         ),
       ),
       expansionTileTheme: base.expansionTileTheme.copyWith(
@@ -233,17 +234,19 @@ class ModuleSurface extends StatelessWidget {
           curve: Curves.easeOutCubic,
           reverseCurve: Curves.easeInCubic,
         ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         collapsedShape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
         ),
       ),
     );
     return Theme(
       data: theme,
-      child: DecoratedBox(
-        decoration: BoxDecoration(gradient: palette.gradient),
-        child: child,
+      child: PrimaryScrollController.none(
+        child: DecoratedBox(
+          decoration: BoxDecoration(gradient: palette.gradient),
+          child: child,
+        ),
       ),
     );
   }

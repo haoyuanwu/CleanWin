@@ -293,7 +293,14 @@ void main() {
         operabilityProbe: (paths) async => paths.toSet(),
       );
       final quick = await service.scanAll();
-      expect(quick[CleanCategory.appCache]!.items, hasLength(1));
+      // Quick discovery now includes unknown installed software as well as known rules.
+      expect(quick[CleanCategory.appCache]!.items, hasLength(2));
+      expect(
+        quick.values
+            .expand((category) => category.items)
+            .any((item) => item.path.contains('Pub')),
+        isFalse,
+      );
       service.options = const ScanOptions(deepScan: true);
       final deep = await service.scanAll();
       expect(deep[CleanCategory.appCache]!.items, hasLength(2));
